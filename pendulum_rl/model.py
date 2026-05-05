@@ -67,4 +67,6 @@ def export_policy_to_onnx(policy: Any, export_path: str | Path, sample_obs: np.n
         dynamic_axes={"obs": {0: "batch"}, "action": {0: "batch"}},
         opset_version=opset,
         do_constant_folding=True,
+        # Use the stable legacy exporter for broad ONNXRuntime compatibility.
+        dynamo=False,
     )

@@ -1,0 +1,11 @@
+{
+  "model_path": "artifacts_pi_export_test\\pendulum_ppo.zip",
+  "onnx_path": "artifacts_pi_export_test\\pendulum_policy.onnx",
+  "total_timesteps": 256,
+  "seed": 7,
+  "n_envs": 1,
+  "checkpoint_dir": "artifacts_pi_export_test\\checkpoints",
+  "best_model_dir": "artifacts_pi_export_test\\best_model",
+  "eval_log_dir": "artifacts_pi_export_test\\eval_logs",
+  "stop_reward_threshold": null
+}
