@@ -1,3 +1,10 @@
+"""Run an exported ONNX pendulum policy on the Raspberry Pi with moteus.
+
+This script reads the live controller telemetry, feeds the policy with raw
+hardware observations [position_turns, velocity_turns_per_s, torque_nm], and
+writes a torque command back to the controller at 50 Hz.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -6,71 +13,66 @@ import math
 import time
 from pathlib import Path
 
+import moteus
 import numpy as np
-
-from pendulum_rl.config import PendulumConfig
-from pendulum_rl.preprocess import ObservationBuilder
-from pendulum_rl.runtime import OnnxPendulumPolicy
+import onnxruntime as ort
 
 
-def _read_register(values: object, register: object, default: float = 0.0) -> float:
-    index = int(register)
+class OnnxPolicy:
+    def __init__(self, model_path: Path):
+        self.session = ort.InferenceSession(str(model_path), providers=["CPUExecutionProvider"])
+        self.input_name = self.session.get_inputs()[0].name
+        self.output_name = self.session.get_outputs()[0].name
+
+    def predict(self, obs):
+        if obs.ndim == 1:
+            obs = obs[None, :]
+        action = self.session.run([self.output_name], {self.input_name: obs.astype(np.float32)})[0]
+        return float(np.clip(action.reshape(-1)[0], -1.0, 1.0))
+
+
+async def run(model_path: Path, device: str, rate_hz: float, max_torque: float, watchdog_timeout: float, debug: bool):
+    print(f"[DEBUG] Loading policy from {model_path}")
+    policy = OnnxPolicy(model_path)
+    print(f"[DEBUG] Policy loaded successfully")
+
+    # Use the default Controller() which auto-selects available transports.
+    # Creating a transport (Fdcanusb) and passing it in has triggered
+    # C++ assertion failures on some systems; the default constructor
+    # has proven more robust in practice (see quick tests earlier).
     try:
-        if hasattr(values, "__len__") and index < len(values):
-            value = values[index]
-            if value is not None:
-                return float(value)
-    except Exception:
-        pass
-    return default
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run an exported ONNX pendulum policy")
-    parser.add_argument("--model", required=True, help="Path to the exported .onnx policy")
-    parser.add_argument("--rate", type=float, default=50.0, help="Control rate in Hz")
-    parser.add_argument("--max-torque", type=float, default=1.0, help="Maximum torque to command in Nm")
-    parser.add_argument("--watchdog", type=float, default=0.1, help="Watchdog timeout in seconds")
-    parser.add_argument("--debug", action="store_true", help="Print telemetry every cycle")
-    parser.add_argument("--device", default="/dev/ttyACM0", help="moteus device path placeholder")
-    parser.add_argument("--dry-run", action="store_true", help="Run against the local simulator instead of hardware")
-    parser.add_argument("--steps", type=int, default=500, help="Dry-run step count")
-    return parser.parse_args()
-
-
-async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watchdog_timeout: float, debug: bool) -> None:
-    try:
-        import moteus
-    except Exception as exc:  # pragma: no cover - hardware only
-        raise RuntimeError("moteus is required for hardware mode") from exc
-
-    policy = OnnxPendulumPolicy(model_path)
-    config = PendulumConfig()
-    tracker = ObservationBuilder(
-        history_length=config.history_length,
-        velocity_scale_turns_per_s=config.max_speed_turns_per_s,
-        torque_scale_nm=max_torque,
-    )
-
-    controller = moteus.Controller()
-    result = await controller.set_stop(query=True)
-    values = result.values
-    position_turns = _read_register(values, moteus.Register.POSITION)
-    velocity_turns_per_s = _read_register(values, moteus.Register.VELOCITY)
-    torque_nm = _read_register(values, moteus.Register.TORQUE)
-    obs = tracker.reset(position_turns, velocity_turns_per_s, torque_nm)
+        print(f"[DEBUG] Initializing moteus.Controller()")
+        controller = moteus.Controller()
+        print(f"[DEBUG] Controller initialized: {controller}")
+        if debug:
+            print(f"Controller initialized: {controller}")
+    except Exception as e:
+        print(f"[ERROR] Failed to initialize moteus.Controller(): {e}")
+        raise
 
     period_s = 1.0 / rate_hz
+
+    def obs_from_result(result):
+        values = result.values
+        return np.array([
+            float(values[moteus.Register.POSITION]),
+            float(values[moteus.Register.VELOCITY]),
+            float(values[moteus.Register.TORQUE]),
+        ], dtype=np.float32)
+
+    result = await controller.set_stop(query=True)
+    obs = obs_from_result(result)
+
     try:
         while True:
-            loop_start = time.perf_counter()
-            action = policy.predict(obs)
-            command_torque = float(np.clip(action * max_torque, -max_torque, max_torque))
+            start = time.monotonic()
+            torque = policy.predict(obs)
+            torque = float(np.clip(torque, -max_torque, max_torque))
 
             result = await controller.set_position(
                 position=math.nan,
                 velocity=math.nan,
-                feedforward_torque=command_torque,
+                feedforward_torque=torque,
                 maximum_torque=max_torque,
                 watchdog_timeout=watchdog_timeout,
                 kp_scale=0.0,
@@ -78,21 +80,20 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
                 ignore_position_bounds=1,
                 query=True,
             )
-            values = result.values
-            position_turns = _read_register(values, moteus.Register.POSITION, position_turns)
-            velocity_turns_per_s = _read_register(values, moteus.Register.VELOCITY, velocity_turns_per_s)
-            torque_nm = _read_register(values, moteus.Register.TORQUE, torque_nm)
-            obs = tracker.push(position_turns, velocity_turns_per_s, torque_nm)
+            obs = obs_from_result(result)
 
             if debug:
                 print(
-                    f"pos={position_turns: .3f} turns vel={velocity_turns_per_s: .3f} turns/s "
-                    f"torque={torque_nm: .3f} Nm cmd={command_torque: .3f} Nm"
+                    f"pos={obs[0]: .3f} rev  vel={obs[1]: .3f} rev/s  "
+                    f"torque={obs[2]: .3f} Nm  cmd={torque: .3f} Nm  "
+                    f"mode={result.values.get(moteus.Register.MODE, 'n/a')}  "
+                    f"fault={result.values.get(moteus.Register.FAULT, 'n/a')}"
                 )
 
-            elapsed = time.perf_counter() - loop_start
-            if elapsed < period_s:
-                await asyncio.sleep(period_s - elapsed)
+            elapsed = time.monotonic() - start
+            sleep_s = period_s - elapsed
+            if sleep_s > 0:
+                await asyncio.sleep(sleep_s)
     finally:
         try:
             await controller.set_stop(query=True)
@@ -100,40 +101,14 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
             pass
 
 
-def run_dry(model_path: Path, steps: int, rate_hz: float, debug: bool) -> None:
-    from pendulum_rl.env import PendulumSwingUpEnv
-
-    config = PendulumConfig()
-    env = PendulumSwingUpEnv(config=config)
-    policy = OnnxPendulumPolicy(model_path)
-    obs, info = env.reset(seed=config.seed)
-
-    period_s = 1.0 / rate_hz
-    for step in range(steps):
-        start = time.perf_counter()
-        action = policy.predict(obs)
-        obs, reward, terminated, truncated, info = env.step(np.array([action], dtype=np.float32))
-        if debug:
-            print(
-                f"step={step} time={info['time_s']:.3f}s theta={info['theta_turns']:.3f} turns "
-                f"vel={info['theta_dot_turns_per_s']:.3f} turns/s torque={info['applied_torque_nm']:.3f} Nm "
-                f"reward={reward:.3f}"
-            )
-        if terminated or truncated:
-            obs, info = env.reset(seed=config.seed)
-        elapsed = time.perf_counter() - start
-        if elapsed < period_s:
-            time.sleep(period_s - elapsed)
-
-
-def main() -> None:
-    args = parse_args()
-    model_path = Path(args.model)
-    if args.dry_run:
-        run_dry(model_path, args.steps, args.rate, args.debug)
-        return
-    asyncio.run(run_hardware(model_path, args.rate, args.max_torque, args.watchdog, args.debug))
-
-
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run a pendulum ONNX policy on moteus hardware")
+    parser.add_argument("--model", required=True, help="Path to the exported .onnx policy")
+    parser.add_argument("--device", default="/dev/ttyACM0", help="fdcanusb device path")
+    parser.add_argument("--rate", type=float, default=50.0, help="Control rate in Hz")
+    parser.add_argument("--max-torque", type=float, default=1.0, help="Maximum torque to command (Nm)")
+    parser.add_argument("--watchdog", type=float, default=0.1, help="Watchdog timeout (s)")
+    parser.add_argument("--debug", action="store_true", help="Print telemetry every cycle")
+    args = parser.parse_args()
+
+    asyncio.run(run(Path(args.model), args.device, args.rate, args.max_torque, args.watchdog, args.debug))
