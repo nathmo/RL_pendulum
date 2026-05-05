@@ -1,0 +1,289 @@
+from __future__ import annotations
+
+from math import pi
+from collections import deque
+from typing import Any
+
+import gymnasium as gym
+import mujoco
+import numpy as np
+from gymnasium import spaces
+
+from .config import PendulumConfig
+from .preprocess import ObservationBuilder, radians_to_turns, turns_to_radians, wrap_angle
+
+
+def _make_xml(config: PendulumConfig) -> str:
+    timestep = 1.0 / config.physics_hz
+    return f"""
+<mujoco model="inverted_pendulum">
+  <compiler angle="radian" coordinate="local"/>
+  <option timestep="{timestep}" integrator="Euler" gravity="0 0 -9.81"/>
+  <default>
+    <joint damping="0" frictionloss="0" armature="0"/>
+    <geom contype="0" conaffinity="0" rgba="0.5 0.5 0.5 1"/>
+  </default>
+  <worldbody>
+    <body name="pivot" pos="0 0 0">
+      <joint name="hinge" type="hinge" axis="0 1 0" limited="false"/>
+      <geom name="rod" type="capsule" fromto="0 0 0 0 0 {config.length_m}" size="0.01" density="0"/>
+      <body name="tip" pos="0 0 {config.length_m}">
+        <geom name="tip_mass" type="sphere" size="0.03" mass="{config.mass_kg}"/>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <motor joint="hinge" gear="1" ctrllimited="true" ctrlrange="-1 1"/>
+  </actuator>
+</mujoco>
+"""
+
+
+class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
+    metadata = {"render_modes": []}
+
+    def __init__(self, config: PendulumConfig | None = None) -> None:
+        super().__init__()
+        self.config = config or PendulumConfig()
+        self.np_random = np.random.default_rng(self.config.seed)
+        self.model = mujoco.MjModel.from_xml_string(_make_xml(self.config))
+        self.data = mujoco.MjData(self.model)
+
+        self._hinge_joint_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_JOINT, "hinge")
+        self._hinge_qposadr = int(self.model.jnt_qposadr[self._hinge_joint_id])
+        self._hinge_dofadr = int(self.model.jnt_dofadr[self._hinge_joint_id])
+        self._tip_body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, "tip")
+
+        self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,), dtype=np.float32)
+        self.observation_space = spaces.Box(
+            low=-1.0,
+            high=1.0,
+            shape=(self.config.observation_dim,),
+            dtype=np.float32,
+        )
+
+        self._observation_builder = ObservationBuilder(
+            history_length=self.config.history_length,
+            velocity_scale_turns_per_s=self.config.max_speed_turns_per_s,
+            torque_scale_nm=self.config.max_torque_nm,
+        )
+        self._active_torque_nm = 0.0
+        self._pending_torque_nm = 0.0
+        self._pending_apply_substep = 0
+        self._substep_index = 0
+        self._episode_step = 0
+        self._success_counter = 0
+        self._last_commanded_torque_nm = 0.0
+        self._length_m = self.config.length_m
+        self._mass_kg = self.config.mass_kg
+        self._viscous_friction = 0.0
+        self._coulomb_friction = 0.0
+        self._gravity = 9.81
+        # rotation history: deque of (time_s, theta_turns)
+        self._rotation_history: deque[tuple[float, float]] = deque()
+
+    def _apply_randomization(self) -> dict[str, float]:
+        rand = self.config.randomization
+        self._mass_kg = self.config.mass_kg * self.np_random.uniform(rand.mass_scale_min, rand.mass_scale_max)
+        self._length_m = self.config.length_m * self.np_random.uniform(rand.length_scale_min, rand.length_scale_max)
+        self._viscous_friction = self.np_random.uniform(rand.viscous_friction_min, rand.viscous_friction_max)
+        self._coulomb_friction = self.np_random.uniform(rand.coulomb_friction_min, rand.coulomb_friction_max)
+        self._gravity = self.np_random.uniform(rand.gravity_min, rand.gravity_max)
+
+        tip_mass = self._mass_kg
+        radius = 0.03
+        sphere_inertia = 0.4 * tip_mass * radius * radius
+        self.model.body_mass[self._tip_body_id] = tip_mass
+        self.model.body_inertia[self._tip_body_id] = np.array([sphere_inertia, sphere_inertia, sphere_inertia], dtype=np.float64)
+        self.model.body_pos[self._tip_body_id] = np.array([0.0, 0.0, self._length_m], dtype=np.float64)
+        self.model.dof_damping[self._hinge_dofadr] = self._viscous_friction
+        self.model.dof_frictionloss[self._hinge_dofadr] = self._coulomb_friction
+        self.model.opt.gravity[:] = np.array([0.0, 0.0, -self._gravity], dtype=np.float64)
+        return {
+            "mass_kg": self._mass_kg,
+            "length_m": self._length_m,
+            "viscous_friction": self._viscous_friction,
+            "coulomb_friction": self._coulomb_friction,
+            "gravity": self._gravity,
+        }
+
+    def _raw_measurement(self) -> tuple[float, float, float]:
+        theta = float(self.data.qpos[self._hinge_qposadr])
+        theta_turns = radians_to_turns(theta)
+        theta_dot_turns_per_s = radians_to_turns(float(self.data.qvel[self._hinge_dofadr]))
+        torque_nm = float(self._active_torque_nm)
+
+        rand = self.config.randomization
+        theta_turns += float(self.np_random.normal(0.0, rand.observation_position_sigma_turns))
+        theta_dot_turns_per_s += float(self.np_random.normal(0.0, rand.observation_velocity_sigma_turns_per_s))
+        torque_nm += float(self.np_random.normal(0.0, rand.observation_torque_sigma_nm))
+        return theta_turns, theta_dot_turns_per_s, torque_nm
+
+    def _build_observation(self) -> np.ndarray:
+        theta_turns, theta_dot_turns_per_s, torque_nm = self._raw_measurement()
+        return self._observation_builder.push(theta_turns, theta_dot_turns_per_s, torque_nm)
+
+    def _compute_reward(self, commanded_torque_nm: float, previous_commanded_torque_nm: float) -> tuple[float, dict[str, float]]:
+        cfg = self.config
+        reward_cfg = cfg.reward
+
+        theta = float(self.data.qpos[self._hinge_qposadr])
+        theta_dot = float(self.data.qvel[self._hinge_dofadr])
+        theta_error = wrap_angle(theta - pi)
+
+        upright = 0.5 * (1.0 + np.cos(theta_error))
+        potential = self._mass_kg * self._gravity * self._length_m * (1.0 - np.cos(theta))
+        kinetic = 0.5 * self._mass_kg * (self._length_m * theta_dot) ** 2
+        energy = potential + kinetic
+        target_energy = 2.0 * self._mass_kg * self._gravity * self._length_m
+        energy_error = abs(energy - target_energy)
+        energy_reward = np.exp(-energy_error / max(reward_cfg.energy_scale, 1e-6))
+
+        theta_dot_turns_per_s = radians_to_turns(theta_dot)
+        vel_penalty = (theta_dot_turns_per_s / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
+        torque_penalty = (commanded_torque_nm / max(self.config.max_torque_nm, 1e-6)) ** 2
+        delta_torque_penalty = ((commanded_torque_nm - previous_commanded_torque_nm) / max(self.config.max_torque_nm, 1e-6)) ** 2
+
+        reward = (
+            reward_cfg.upright_weight * upright
+            + reward_cfg.energy_weight * energy_reward
+            - reward_cfg.velocity_penalty_weight * vel_penalty
+            - reward_cfg.torque_penalty_weight * torque_penalty
+            - reward_cfg.delta_torque_penalty_weight * delta_torque_penalty
+        )
+
+        # --- Rolling-average rotation penalty ---
+        # Track rotation (in turns) over time and compute net revolutions
+        current_time_s = float(self._substep_index * self.config.physics_dt)
+        current_turns = radians_to_turns(theta)
+        # append current sample
+        self._rotation_history.append((current_time_s, current_turns))
+        # purge old samples outside the window
+        window_s = float(reward_cfg.rolling_window_s)
+        while self._rotation_history and (current_time_s - self._rotation_history[0][0]) > window_s:
+            self._rotation_history.popleft()
+
+        rolling_penalty = 0.0
+        rolling_rev = 0.0
+        if current_time_s >= window_s and len(self._rotation_history) >= 2:
+            first_time, first_turns = self._rotation_history[0]
+            last_time, last_turns = self._rotation_history[-1]
+            # net accumulated revolutions over the window
+            rolling_rev = float(last_turns - first_turns)
+            # if net revolutions exceed threshold, penalize
+            if abs(rolling_rev) > float(reward_cfg.rolling_rev_threshold_turns):
+                rev_per_s = rolling_rev / window_s
+                # normalize by velocity scale then square
+                norm = (abs(rev_per_s) / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
+                rolling_penalty = float(reward_cfg.rolling_penalty_weight) * norm
+                reward -= rolling_penalty
+
+
+        success = upright >= reward_cfg.success_upright_threshold and abs(theta_dot_turns_per_s) <= reward_cfg.success_velocity_threshold_turns_per_s
+        self._success_counter = self._success_counter + 1 if success else 0
+        if self._success_counter >= reward_cfg.success_hold_steps:
+            reward += reward_cfg.success_bonus
+
+        metrics = {
+            "upright": upright,
+            "energy_reward": energy_reward,
+            "theta_turns": radians_to_turns(theta),
+            "theta_dot_turns_per_s": theta_dot_turns_per_s,
+            "commanded_torque_nm": commanded_torque_nm,
+            "rolling_rev_turns": rolling_rev,
+            "rolling_penalty": rolling_penalty,
+        }
+        return float(reward), metrics
+
+    def _simulate_control_interval(self, commanded_torque_nm: float) -> None:
+        rand = self.config.randomization
+        hold_dt = self.config.control_dt + float(self.np_random.normal(0.0, rand.control_jitter_std_s))
+        hold_dt = float(np.clip(hold_dt, self.config.physics_dt, self.config.control_dt + rand.control_jitter_max_s))
+        hold_steps = max(1, int(round(hold_dt / self.config.physics_dt)))
+
+        if float(self.np_random.random()) >= rand.packet_drop_prob:
+            delay_s = float(self.np_random.normal(rand.command_delay_mean_s, rand.command_delay_std_s))
+            delay_s = float(np.clip(delay_s, 0.0, rand.command_delay_max_s))
+            delay_steps = int(round(delay_s / self.config.physics_dt))
+            self._pending_torque_nm = commanded_torque_nm
+            self._pending_apply_substep = self._substep_index + delay_steps
+
+        for _ in range(hold_steps):
+            if self._substep_index >= self._pending_apply_substep:
+                self._active_torque_nm = self._pending_torque_nm
+
+            self.data.ctrl[0] = np.clip(self._active_torque_nm, -self.config.max_torque_nm, self.config.max_torque_nm)
+            mujoco.mj_step(self.model, self.data)
+            self._substep_index += 1
+
+    def reset(self, *, seed: int | None = None, options: dict[str, Any] | None = None):
+        super().reset(seed=seed)
+        if seed is not None:
+            self.np_random = np.random.default_rng(seed)
+
+        randomization = self._apply_randomization()
+        mujoco.mj_resetData(self.model, self.data)
+
+        position_turns = float(
+            self.np_random.uniform(
+                self.config.initial_position_turns_min,
+                self.config.initial_position_turns_max,
+            )
+        )
+        velocity_turns_per_s = float(
+            self.np_random.uniform(
+                self.config.initial_velocity_turns_per_s_min,
+                self.config.initial_velocity_turns_per_s_max,
+            )
+        )
+        self.data.qpos[self._hinge_qposadr] = turns_to_radians(position_turns)
+        self.data.qvel[self._hinge_dofadr] = turns_to_radians(velocity_turns_per_s)
+        self._active_torque_nm = 0.0
+        self._pending_torque_nm = 0.0
+        self._pending_apply_substep = 0
+        self._substep_index = 0
+        self._episode_step = 0
+        self._success_counter = 0
+        self._last_commanded_torque_nm = 0.0
+        mujoco.mj_forward(self.model, self.data)
+
+        observation = self._observation_builder.reset(position_turns, velocity_turns_per_s, 0.0)
+        info = {
+            "randomization": randomization,
+            "time_s": 0.0,
+            "position_turns": position_turns,
+            "velocity_turns_per_s": velocity_turns_per_s,
+        }
+        # initialize rotation history with the starting state at t=0
+        self._rotation_history.clear()
+        self._rotation_history.append((0.0, float(position_turns)))
+        return observation, info
+
+    def step(self, action: np.ndarray):
+        self._episode_step += 1
+        requested = float(np.asarray(action, dtype=np.float32).reshape(-1)[0])
+        requested = float(np.clip(requested, -1.0, 1.0))
+        commanded_torque_nm = requested * self.config.max_torque_nm
+        previous_commanded_torque_nm = self._last_commanded_torque_nm
+        self._last_commanded_torque_nm = commanded_torque_nm
+
+        self._simulate_control_interval(commanded_torque_nm)
+        reward, metrics = self._compute_reward(commanded_torque_nm, previous_commanded_torque_nm)
+        observation = self._build_observation()
+
+        theta_dot_turns_per_s = metrics["theta_dot_turns_per_s"]
+        terminated = False
+        truncated = self._episode_step >= self.config.episode_steps
+        if not np.isfinite(observation).all():
+            truncated = True
+        if abs(theta_dot_turns_per_s) > self.config.max_speed_turns_per_s * 4.0:
+            truncated = True
+
+        info = {
+            **metrics,
+            "time_s": self._substep_index * self.config.physics_dt,
+            "episode_step": self._episode_step,
+            "applied_torque_nm": self._active_torque_nm,
+            "previous_commanded_torque_nm": previous_commanded_torque_nm,
+        }
+        return observation, reward, terminated, truncated, info

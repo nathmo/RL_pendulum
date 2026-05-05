@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pendulum-rl"
+version = "0.1.0"
+description = "Inverted pendulum swing-up and balance RL stack"
+requires-python = ">=3.12"
+dependencies = [
+    "gymnasium>=1.0.0",
+    "matplotlib>=3.8",
+    "mujoco>=3.2",
+    "numpy>=1.26",
+    "onnx>=1.16",
+    "onnxruntime>=1.18",
+    "onnxscript>=0.1.0",
+    "stable-baselines3>=2.3.2",
+    "torch>=2.3",
+]
+
+[tool.setuptools]
+packages = ["pendulum_rl"]
