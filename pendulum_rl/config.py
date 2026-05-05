@@ -64,7 +64,7 @@ class PendulumConfig:
     max_speed_turns_per_s: float = 2.0
     episode_seconds: float = 30.0
     seed: int = 7
-    export_opset: int = 18
+    export_opset: int = 13
     ppo_total_timesteps: int = 1_000_000
     ppo_n_steps: int = 2048
     ppo_batch_size: int = 256
