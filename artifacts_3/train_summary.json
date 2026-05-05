@@ -1,0 +1,11 @@
+{
+  "model_path": "artifacts_3\\pendulum_ppo.zip",
+  "onnx_path": "artifacts_3\\pendulum_policy.onnx",
+  "total_timesteps": 1000000,
+  "seed": 7,
+  "n_envs": 1,
+  "checkpoint_dir": "artifacts_3\\checkpoints",
+  "best_model_dir": "artifacts_3\\best_model",
+  "eval_log_dir": "artifacts_3\\eval_logs",
+  "stop_reward_threshold": null
+}
