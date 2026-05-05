@@ -104,6 +104,31 @@ Example early-stop run:
 python run.py --model /path/to/pendulum_policy.onnx --debug
 ```
 
+For Raspberry Pi hardware use, you do not need the full training stack. `requirements.txt` includes `torch` and `stable-baselines3`, which are only needed for training on a PC and can be large to download on the Pi. Install only the runtime dependencies instead:
+
+```bash
+sudo apt update
+sudo apt install -y python3-venv python3-pip
+
+cd ~/RL_pendulum
+python3 -m venv .venv
+source .venv/bin/activate
+
+export PIP_NO_CACHE_DIR=1
+export TMPDIR=$HOME/tmp
+mkdir -p "$TMPDIR"
+
+pip install -U pip setuptools wheel
+pip install numpy onnx onnxruntime onnxscript moteus
+```
+
+Then run the hardware loop:
+
+```bash
+source .venv/bin/activate
+python run.py --model /home/pi/RL_pendulum/artifacts/pendulum_policy.onnx --debug
+```
+
 ## Next step
 
 Run `train.py` after installing dependencies, then use `visualize.py` to inspect the learned swing-up behavior before moving to hardware.

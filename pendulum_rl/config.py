@@ -59,8 +59,8 @@ class PendulumConfig:
     observation_features_per_step: int = 4
     initial_position_turns_min: float = -5.0
     initial_position_turns_max: float = 5.0
-    initial_velocity_turns_per_s_min: float = -5.0
-    initial_velocity_turns_per_s_max: float = 5.0
+    initial_velocity_turns_per_s_min: float = -1.0
+    initial_velocity_turns_per_s_max: float = 1.0
     max_speed_turns_per_s: float = 2.0
     episode_seconds: float = 30.0
     seed: int = 7

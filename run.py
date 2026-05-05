@@ -9,9 +9,20 @@ from pathlib import Path
 import numpy as np
 
 from pendulum_rl.config import PendulumConfig
-from pendulum_rl.env import PendulumSwingUpEnv
 from pendulum_rl.preprocess import ObservationBuilder
 from pendulum_rl.runtime import OnnxPendulumPolicy
+
+
+def _read_register(values: object, register: object, default: float = 0.0) -> float:
+    index = int(register)
+    try:
+        if hasattr(values, "__len__") and index < len(values):
+            value = values[index]
+            if value is not None:
+                return float(value)
+    except Exception:
+        pass
+    return default
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,9 +55,9 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
     controller = moteus.Controller()
     result = await controller.set_stop(query=True)
     values = result.values
-    position_turns = float(values[moteus.Register.POSITION])
-    velocity_turns_per_s = float(values[moteus.Register.VELOCITY])
-    torque_nm = float(values[moteus.Register.TORQUE])
+    position_turns = _read_register(values, moteus.Register.POSITION)
+    velocity_turns_per_s = _read_register(values, moteus.Register.VELOCITY)
+    torque_nm = _read_register(values, moteus.Register.TORQUE)
     obs = tracker.reset(position_turns, velocity_turns_per_s, torque_nm)
 
     period_s = 1.0 / rate_hz
@@ -68,9 +79,9 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
                 query=True,
             )
             values = result.values
-            position_turns = float(values[moteus.Register.POSITION])
-            velocity_turns_per_s = float(values[moteus.Register.VELOCITY])
-            torque_nm = float(values[moteus.Register.TORQUE])
+            position_turns = _read_register(values, moteus.Register.POSITION, position_turns)
+            velocity_turns_per_s = _read_register(values, moteus.Register.VELOCITY, velocity_turns_per_s)
+            torque_nm = _read_register(values, moteus.Register.TORQUE, torque_nm)
             obs = tracker.push(position_turns, velocity_turns_per_s, torque_nm)
 
             if debug:
@@ -90,6 +101,8 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
 
 
 def run_dry(model_path: Path, steps: int, rate_hz: float, debug: bool) -> None:
+    from pendulum_rl.env import PendulumSwingUpEnv
+
     config = PendulumConfig()
     env = PendulumSwingUpEnv(config=config)
     policy = OnnxPendulumPolicy(model_path)

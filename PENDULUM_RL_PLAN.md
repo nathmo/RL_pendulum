@@ -264,7 +264,7 @@ Why this stack:
 
 Purpose:
 
-- Run headless training on the server.
+- Run headless training on the server (ubuntu based).
 - Create the environment with randomization and jitter.
 - Train PPO.
 - Save checkpoints.
