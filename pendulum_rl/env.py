@@ -129,9 +129,10 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
 
         theta = float(self.data.qpos[self._hinge_qposadr])
         theta_dot = float(self.data.qvel[self._hinge_dofadr])
-        theta_error = wrap_angle(theta - pi)
+        theta_turns = radians_to_turns(theta)
+        phase_error_turns = ((theta_turns - reward_cfg.target_phase_turns + 0.5) % 1.0) - 0.5
 
-        upright = 0.5 * (1.0 + np.cos(theta_error))
+        upright = 0.5 * (1.0 + np.cos(2.0 * np.pi * phase_error_turns))
         potential = self._mass_kg * self._gravity * self._length_m * (1.0 - np.cos(theta))
         kinetic = 0.5 * self._mass_kg * (self._length_m * theta_dot) ** 2
         energy = potential + kinetic
@@ -186,8 +187,9 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
 
         metrics = {
             "upright": upright,
+            "phase_error_turns": phase_error_turns,
             "energy_reward": energy_reward,
-            "theta_turns": radians_to_turns(theta),
+            "theta_turns": theta_turns,
             "theta_dot_turns_per_s": theta_dot_turns_per_s,
             "commanded_torque_nm": commanded_torque_nm,
             "rolling_rev_turns": rolling_rev,

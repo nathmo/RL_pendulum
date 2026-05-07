@@ -34,6 +34,7 @@ class RewardConfig:
     velocity_penalty_weight: float = 0.05
     torque_penalty_weight: float = 0.015
     delta_torque_penalty_weight: float = 0.01
+    target_phase_turns: float = 0.5
     success_bonus: float = 8.0
     success_hold_steps: int = 12
     success_upright_threshold: float = 0.95

@@ -118,9 +118,11 @@ export PIP_NO_CACHE_DIR=1
 export TMPDIR=$HOME/tmp
 mkdir -p "$TMPDIR"
 
-pip install -U pip setuptools wheel
-pip install numpy onnx onnxruntime onnxscript moteus
+python -m pip install setuptools wheel
+python -m pip install numpy onnx onnxruntime onnxscript moteus
 ```
+
+If the Pi cannot resolve `pypi.org` or `www.piwheels.org`, the install will fail before it reaches the package downloads. In that case, skip the network install step and use a local wheelhouse or a machine with working DNS to pre-download the wheels.
 
 Then run the hardware loop:
 
@@ -131,22 +133,24 @@ python run.py --model /home/pi/RL_pendulum/artifacts/pendulum_policy.onnx --debu
 
 ### Raspberry Pi 3B stability notes
 
-If ONNXRuntime aborts on Pi 3B (for example with a C++ `stl_vector` assertion), use the Pi3 runtime environment and an opset 13 export:
-
-```bash
-# on your training machine
-python export_onnx.py --model-zip artifacts/pendulum_ppo.zip --out artifacts/pendulum_policy_pi3.onnx --opset 13
-```
+Pi 3B uses a specific onnxruntime version (1.20.1) to avoid C++ memory access bugs in older/newer versions. Use the dedicated Pi3 requirements file:
 
 ```bash
 # on Pi 3B
 cd ~/RL_pendulum
 python3 -m venv .venv_pi3
 source .venv_pi3/bin/activate
-pip install -U pip
-pip install -r requirements.pi3.txt
-python run.py --model /home/pi/RL_pendulum/artifacts/pendulum_policy_pi3.onnx --debug
+
+export PIP_NO_CACHE_DIR=1
+export TMPDIR=$HOME/tmp
+mkdir -p "$TMPDIR"
+
+python -m pip install setuptools wheel
+python -m pip install -r requirements.pi3.txt
+python run.py --model /home/pi/RL_pendulum/artifacts/pendulum_policy.onnx --debug
 ```
+
+The opset export defaults to 13 in config, which is compatible with onnxruntime 1.20.1 on Pi 3B.
 
 ## Next step
 
