@@ -33,6 +33,7 @@ class RewardConfig:
     energy_weight: float = 1.5
     velocity_penalty_weight: float = 0.05
     torque_penalty_weight: float = 0.015
+    torque_saturation_penalty_weight: float = 0.1
     delta_torque_penalty_weight: float = 0.01
     target_phase_turns: float = 0.5
     success_bonus: float = 8.0

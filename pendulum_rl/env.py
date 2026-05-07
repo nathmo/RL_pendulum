@@ -142,7 +142,9 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
 
         theta_dot_turns_per_s = radians_to_turns(theta_dot)
         vel_penalty = (theta_dot_turns_per_s / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
-        torque_penalty = (commanded_torque_nm / max(self.config.max_torque_nm, 1e-6)) ** 2
+        torque_norm = commanded_torque_nm / max(self.config.max_torque_nm, 1e-6)
+        torque_penalty = torque_norm ** 2
+        torque_saturation_penalty = reward_cfg.torque_saturation_penalty_weight * abs(torque_norm) ** 4
         delta_torque_penalty = ((commanded_torque_nm - previous_commanded_torque_nm) / max(self.config.max_torque_nm, 1e-6)) ** 2
 
         reward = (
@@ -150,6 +152,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             + reward_cfg.energy_weight * energy_reward
             - reward_cfg.velocity_penalty_weight * vel_penalty
             - reward_cfg.torque_penalty_weight * torque_penalty
+            - torque_saturation_penalty
             - reward_cfg.delta_torque_penalty_weight * delta_torque_penalty
         )
 
@@ -192,6 +195,8 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "theta_turns": theta_turns,
             "theta_dot_turns_per_s": theta_dot_turns_per_s,
             "commanded_torque_nm": commanded_torque_nm,
+            "torque_norm": torque_norm,
+            "torque_saturation_penalty": torque_saturation_penalty,
             "rolling_rev_turns": rolling_rev,
             "rolling_penalty": rolling_penalty,
         }

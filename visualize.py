@@ -44,11 +44,12 @@ def main() -> None:
     policy = OnnxPendulumPolicy(args.model)
 
     plt.ion()
-    fig = plt.figure(figsize=(13, 8))
-    ax_3d = fig.add_subplot(2, 2, 1, projection="3d")
-    ax_angle = fig.add_subplot(2, 2, 2)
-    ax_velocity = fig.add_subplot(2, 2, 3)
-    ax_torque = fig.add_subplot(2, 2, 4)
+    fig = plt.figure(figsize=(13, 14))
+    ax_3d = fig.add_subplot(5, 1, 1, projection="3d")
+    ax_angle = fig.add_subplot(5, 1, 2)
+    ax_velocity = fig.add_subplot(5, 1, 3)
+    ax_torque = fig.add_subplot(5, 1, 4)
+    ax_reward = fig.add_subplot(5, 1, 5)
 
     for episode in range(args.episodes):
         obs, info = env.reset(seed=args.seed)
@@ -78,7 +79,6 @@ def main() -> None:
 
             ax_angle.cla()
             ax_angle.plot(history_time, history_theta, label="theta (rad)")
-            ax_angle.plot(history_time, np.full(len(history_time), np.pi), linestyle="--", label="upright")
             ax_angle.set_title("Angle")
             ax_angle.legend(loc="best")
 
@@ -89,12 +89,17 @@ def main() -> None:
 
             ax_torque.cla()
             ax_torque.plot(history_time, history_torque, label="torque (Nm)")
-            ax_torque.plot(history_time, history_reward, label="reward")
             ax_torque.set_title("Torque and Reward")
             ax_torque.legend(loc="best")
 
+            ax_reward.cla()
+            ax_reward.plot(history_time, history_reward, label="reward")
+            ax_reward.plot(history_time, np.full(len(history_reward), 4.0), linestyle="--", label="goal reference")
+            ax_reward.set_title("Reward")
+            ax_reward.legend(loc="best")
+
             fig.suptitle(f"Episode {episode + 1} step {step_index} reward {reward:.3f}")
-            fig.tight_layout()
+            fig.tight_layout(rect=[0, 0.01, 1, 0.98])
             plt.pause(0.001)
 
             if args.sleep is not None:
