@@ -5,6 +5,9 @@ import json
 import time
 from pathlib import Path
 
+import matplotlib
+import matplotlib.pyplot as plt
+import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback, EvalCallback, StopTrainingOnRewardThreshold
 from stable_baselines3.common.monitor import Monitor
@@ -13,6 +16,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from pendulum_rl.config import PendulumConfig
 from pendulum_rl.env import PendulumSwingUpEnv
 from pendulum_rl.model import build_policy_kwargs, export_policy_to_onnx
+
+matplotlib.use("Agg")
 
 
 def make_env(config: PendulumConfig, seed: int):
@@ -35,6 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint-freq", type=int, default=50_000, help="Save a checkpoint every N environment steps")
     parser.add_argument("--eval-freq", type=int, default=10_000, help="Evaluate every N environment steps")
     parser.add_argument("--stop-reward-threshold", type=float, default=None, help="Stop training early when mean eval reward reaches this threshold")
+    parser.add_argument("--plot-epoch-interval", type=int, default=20, help="Save a simulation snapshot plot every N epochs")
+    parser.add_argument("--plot-max-steps", type=int, default=None, help="Optional max steps per snapshot episode")
     return parser.parse_args()
 
 
@@ -117,6 +124,145 @@ class EpochEtaCallback(BaseCallback):
         return True
 
 
+class TrainingVisualizationCallback(BaseCallback):
+    """Save training curves and periodic policy-behavior plots."""
+
+    def __init__(self, output_dir: Path, config: PendulumConfig, epoch_interval: int = 20, max_steps: int | None = None, verbose: int = 1):
+        super().__init__(verbose=verbose)
+        self.output_dir = output_dir
+        self.config = config
+        self.epoch_interval = max(1, epoch_interval)
+        self.max_steps = max_steps
+        self.plot_dir = self.output_dir / "training_plots"
+        self.snapshot_dir = self.plot_dir / "snapshots"
+        self.plot_dir.mkdir(parents=True, exist_ok=True)
+        self.snapshot_dir.mkdir(parents=True, exist_ok=True)
+        self.n_steps_per_epoch = self.config.ppo_n_steps * self.config.ppo_n_envs
+        self.last_epoch_logged = 0
+        self.last_snapshot_epoch = 0
+        self.epoch_indices: list[int] = []
+        self.epoch_mean_rewards: list[float] = []
+
+    def _compute_mean_episode_reward(self) -> float:
+        if len(self.model.ep_info_buffer) == 0:
+            return float("nan")
+        rewards = [float(ep_info["r"]) for ep_info in self.model.ep_info_buffer if "r" in ep_info]
+        if not rewards:
+            return float("nan")
+        return float(np.mean(rewards))
+
+    def _run_snapshot_episode(self, epoch: int) -> None:
+        env = PendulumSwingUpEnv(config=self.config)
+        obs, _ = env.reset(seed=self.config.seed + epoch)
+        max_steps = self.max_steps if self.max_steps is not None else self.config.episode_steps
+
+        history_time: list[float] = []
+        history_angle_turns: list[float] = []
+        history_velocity_turns_per_s: list[float] = []
+        history_torque_nm: list[float] = []
+        history_reward: list[float] = []
+        history_cum_reward: list[float] = []
+        cumulative_reward = 0.0
+
+        for _ in range(max_steps):
+            action, _ = self.model.predict(obs, deterministic=True)
+            action_scalar = float(np.asarray(action).reshape(-1)[0])
+            obs, reward, terminated, truncated, info = env.step(np.array([action_scalar], dtype=np.float32))
+
+            cumulative_reward += float(reward)
+            history_time.append(float(info["time_s"]))
+            history_angle_turns.append(float(info["theta_turns"]))
+            history_velocity_turns_per_s.append(float(info["theta_dot_turns_per_s"]))
+            history_torque_nm.append(float(info["applied_torque_nm"]))
+            history_reward.append(float(reward))
+            history_cum_reward.append(cumulative_reward)
+
+            if terminated or truncated:
+                break
+
+        fig, axes = plt.subplots(5, 1, figsize=(12, 14), sharex=True)
+        axes[0].plot(history_time, history_angle_turns, label="angle (turns)")
+        axes[0].axhline(self.config.reward.target_phase_turns, linestyle="--", label="target phase")
+        axes[0].set_ylabel("turns")
+        axes[0].set_title("Angle")
+        axes[0].legend(loc="best")
+
+        axes[1].plot(history_time, history_velocity_turns_per_s, label="velocity (turns/s)")
+        axes[1].set_ylabel("turns/s")
+        axes[1].set_title("Velocity")
+        axes[1].legend(loc="best")
+
+        axes[2].plot(history_time, history_torque_nm, label="torque (Nm)")
+        axes[2].set_ylabel("Nm")
+        axes[2].set_title("Torque")
+        axes[2].legend(loc="best")
+
+        axes[3].plot(history_time, history_reward, label="instant reward")
+        axes[3].set_ylabel("reward")
+        axes[3].set_title("Instantaneous Reward")
+        axes[3].legend(loc="best")
+
+        axes[4].plot(history_time, history_cum_reward, label="cumulative reward")
+        axes[4].set_xlabel("time (s)")
+        axes[4].set_ylabel("cum reward")
+        axes[4].set_title("Cumulative Reward")
+        axes[4].legend(loc="best")
+
+        fig.suptitle(f"Training snapshot epoch {epoch}")
+        fig.tight_layout(rect=[0, 0.02, 1, 0.98])
+        out_path = self.snapshot_dir / f"epoch_{epoch:06d}.png"
+        fig.savefig(out_path, dpi=130)
+        plt.close(fig)
+
+    def _save_mean_reward_plot(self) -> None:
+        if not self.epoch_indices:
+            return
+        fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+        ax.plot(self.epoch_indices, self.epoch_mean_rewards, linewidth=2)
+        ax.set_title("Training Mean Episode Reward vs Epoch")
+        ax.set_xlabel("epoch")
+        ax.set_ylabel("mean episode reward")
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig(self.plot_dir / "mean_reward_over_epoch.png", dpi=140)
+        plt.close(fig)
+
+        with (self.plot_dir / "mean_reward_over_epoch.json").open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "epoch": self.epoch_indices,
+                    "mean_episode_reward": self.epoch_mean_rewards,
+                },
+                f,
+                indent=2,
+            )
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        current_epoch = self.model.num_timesteps // self.n_steps_per_epoch
+        if current_epoch <= self.last_epoch_logged:
+            return
+
+        mean_reward = self._compute_mean_episode_reward()
+        self.epoch_indices.append(int(current_epoch))
+        self.epoch_mean_rewards.append(float(mean_reward))
+        self.last_epoch_logged = int(current_epoch)
+
+        if current_epoch % self.epoch_interval == 0 and current_epoch != self.last_snapshot_epoch:
+            self._run_snapshot_episode(int(current_epoch))
+            self.last_snapshot_epoch = int(current_epoch)
+            print(f"[TrainingPlot] Saved snapshot for epoch {current_epoch} to {self.snapshot_dir}")
+
+    def _on_training_end(self) -> None:
+        final_epoch = self.model.num_timesteps // self.n_steps_per_epoch
+        if final_epoch > 0 and final_epoch != self.last_snapshot_epoch:
+            self._run_snapshot_episode(int(final_epoch))
+        self._save_mean_reward_plot()
+        print(f"[TrainingPlot] Saved training plots to {self.plot_dir}")
+
+
 def main() -> None:
     args = parse_args()
     config = PendulumConfig()
@@ -173,6 +319,15 @@ def main() -> None:
 
     # Add ETA logging callback
     callbacks.append(EpochEtaCallback(config=config, verbose=1))
+    callbacks.append(
+        TrainingVisualizationCallback(
+            output_dir=output_dir,
+            config=config,
+            epoch_interval=args.plot_epoch_interval,
+            max_steps=args.plot_max_steps,
+            verbose=1,
+        )
+    )
 
     stop_training_callback = None
     if args.stop_reward_threshold is not None:
@@ -213,6 +368,7 @@ def main() -> None:
         "checkpoint_dir": str(checkpoint_dir),
         "best_model_dir": str(output_dir / "best_model"),
         "eval_log_dir": str(output_dir / "eval_logs"),
+        "plot_dir": str(output_dir / "training_plots"),
         "stop_reward_threshold": args.stop_reward_threshold,
     }
     (output_dir / "train_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")

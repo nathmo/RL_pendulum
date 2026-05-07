@@ -52,6 +52,7 @@
     "energy_weight": 1.5,
     "velocity_penalty_weight": 0.05,
     "torque_penalty_weight": 0.015,
+    "torque_saturation_penalty_weight": 0.1,
     "delta_torque_penalty_weight": 0.01,
     "target_phase_turns": 0.5,
     "success_bonus": 8.0,
