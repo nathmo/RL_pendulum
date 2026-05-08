@@ -16,9 +16,9 @@ class RandomizationConfig:
     coulomb_friction_max: float = 0.2
     gravity_min: float = 9.0
     gravity_max: float = 11.0
-    observation_position_sigma_turns: float = 0.002
-    observation_velocity_sigma_turns_per_s: float = 0.05
-    observation_torque_sigma_nm: float = 0.01
+    observation_position_sigma_turns: float = 0.2
+    observation_velocity_sigma_turns_per_s: float = 0.5
+    observation_torque_sigma_nm: float = 0.1
     control_jitter_std_s: float = 0.002
     control_jitter_max_s: float = 0.005
     command_delay_mean_s: float = 0.005
