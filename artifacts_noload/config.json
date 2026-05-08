@@ -1,6 +1,6 @@
 {
   "mass_kg": 0.05,
-  "length_m": 0.45,
+  "length_m": 0.35,
   "max_torque_nm": 1.0,
   "control_hz": 50.0,
   "physics_hz": 1000.0,
