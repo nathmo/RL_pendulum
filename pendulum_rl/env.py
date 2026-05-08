@@ -74,6 +74,9 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         self._episode_step = 0
         self._success_counter = 0
         self._last_commanded_torque_nm = 0.0
+        self._torque_saturation_integrator = 0.0
+        # thermal-style integrator for torque saturation (normalized 0..1)
+        self._torque_saturation_integrator = 0.0
         self._length_m = self.config.length_m
         self._mass_kg = self.config.mass_kg
         self._viscous_friction = 0.0
@@ -139,12 +142,25 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         target_energy = 2.0 * self._mass_kg * self._gravity * self._length_m
         energy_error = abs(energy - target_energy)
         energy_reward = np.exp(-energy_error / max(reward_cfg.energy_scale, 1e-6))
+        gravity_torque_nm = -self._mass_kg * self._gravity * self._length_m * np.sin(theta)
+        gravity_torque_abs_nm = abs(gravity_torque_nm)
 
         theta_dot_turns_per_s = radians_to_turns(theta_dot)
         vel_penalty = (theta_dot_turns_per_s / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
         torque_norm = commanded_torque_nm / max(self.config.max_torque_nm, 1e-6)
         torque_penalty = torque_norm ** 2
-        torque_saturation_penalty = reward_cfg.torque_saturation_penalty_weight * abs(torque_norm) ** 4
+        # --- Duration-sensitive (thermal-like) torque saturation penalty ---
+        # Compute normalized excess above the saturation threshold
+        threshold = float(getattr(reward_cfg, "torque_saturation_threshold", 0.95))
+        excess = max(0.0, abs(torque_norm) - threshold) / max(1e-6, (1.0 - threshold))
+        scaled = min(1.0, excess)
+        expnt = float(getattr(reward_cfg, "torque_saturation_integrator_exponent", 2.0))
+        # integrate with exponential decay using control_dt as timestep
+        dt = float(self.config.control_dt)
+        tau = max(1e-6, float(getattr(reward_cfg, "torque_saturation_time_constant_s", 2.0)))
+        alpha = float(np.exp(-dt / tau))
+        self._torque_saturation_integrator = alpha * self._torque_saturation_integrator + (1.0 - alpha) * (scaled ** expnt)
+        torque_saturation_penalty = float(reward_cfg.torque_saturation_penalty_weight) * (self._torque_saturation_integrator ** 2)
         delta_torque_penalty = ((commanded_torque_nm - previous_commanded_torque_nm) / max(self.config.max_torque_nm, 1e-6)) ** 2
 
         reward = (
@@ -192,11 +208,14 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "upright": upright,
             "phase_error_turns": phase_error_turns,
             "energy_reward": energy_reward,
+            "gravity_torque_nm": gravity_torque_nm,
+            "gravity_torque_abs_nm": gravity_torque_abs_nm,
             "theta_turns": theta_turns,
             "theta_dot_turns_per_s": theta_dot_turns_per_s,
             "commanded_torque_nm": commanded_torque_nm,
             "torque_norm": torque_norm,
             "torque_saturation_penalty": torque_saturation_penalty,
+            "torque_saturation_integrator": float(self._torque_saturation_integrator),
             "rolling_rev_turns": rolling_rev,
             "rolling_penalty": rolling_penalty,
         }

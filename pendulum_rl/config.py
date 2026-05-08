@@ -6,25 +6,25 @@ from typing import Any
 
 @dataclass(slots=True)
 class RandomizationConfig:
-    mass_scale_min: float = 0.8
-    mass_scale_max: float = 1.2
-    length_scale_min: float = 0.95
-    length_scale_max: float = 1.05
+    mass_scale_min: float = 0.5
+    mass_scale_max: float = 2.0
+    length_scale_min: float = 0.5
+    length_scale_max: float = 2.0
     viscous_friction_min: float = 0.0
-    viscous_friction_max: float = 0.08
+    viscous_friction_max: float = 0.2
     coulomb_friction_min: float = 0.0
-    coulomb_friction_max: float = 0.03
+    coulomb_friction_max: float = 0.2
     gravity_min: float = 9.0
-    gravity_max: float = 10.4
+    gravity_max: float = 11.0
     observation_position_sigma_turns: float = 0.002
     observation_velocity_sigma_turns_per_s: float = 0.05
     observation_torque_sigma_nm: float = 0.01
-    control_jitter_std_s: float = 0.002
-    control_jitter_max_s: float = 0.005
-    command_delay_mean_s: float = 0.001
-    command_delay_std_s: float = 0.001
-    command_delay_max_s: float = 0.005
-    packet_drop_prob: float = 0.01
+    control_jitter_std_s: float = 0.02
+    control_jitter_max_s: float = 0.05
+    command_delay_mean_s: float = 0.005
+    command_delay_std_s: float = 0.01
+    command_delay_max_s: float = 0.05
+    packet_drop_prob: float = 0.02
 
 
 @dataclass(slots=True)
@@ -33,7 +33,13 @@ class RewardConfig:
     energy_weight: float = 1.5
     velocity_penalty_weight: float = 0.05
     torque_penalty_weight: float = 0.015
-    torque_saturation_penalty_weight: float = 0.1
+    torque_saturation_penalty_weight: float = 0.2
+    # Normalized torque above which saturation is considered (fraction of max torque)
+    torque_saturation_threshold: float = 0.95
+    # Time constant (seconds) for the saturation integrator (thermal-like)
+    torque_saturation_time_constant_s: float = 2.0
+    # Exponent applied to normalized saturation when accumulating (larger -> harsher)
+    torque_saturation_integrator_exponent: float = 2.0
     delta_torque_penalty_weight: float = 0.01
     target_phase_turns: float = 0.5
     success_bonus: float = 8.0
@@ -47,7 +53,7 @@ class RewardConfig:
     # Weight applied to rolling average speed penalty
     rolling_penalty_weight: float = 0.2
     # Minimum cumulative revolutions over the window to apply penalty
-    rolling_rev_threshold_turns: float = 0.01
+    rolling_rev_threshold_turns: float = 0.1
 
 
 @dataclass(slots=True)

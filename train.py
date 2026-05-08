@@ -151,6 +151,15 @@ class TrainingVisualizationCallback(BaseCallback):
             return float("nan")
         return float(np.mean(rewards))
 
+    @staticmethod
+    def _nearest_half_turn_reference(angle_turns: list[float]) -> float:
+        if not angle_turns:
+            return 0.5
+        # Use the end of the trajectory as a proxy for the stabilized region.
+        tail_len = max(1, int(round(len(angle_turns) * 0.2)))
+        tail_center = float(np.median(np.asarray(angle_turns[-tail_len:], dtype=np.float64)))
+        return float(np.floor(tail_center) + 0.5)
+
     def _run_snapshot_episode(self, epoch: int) -> None:
         env = PendulumSwingUpEnv(config=self.config)
         obs, _ = env.reset(seed=self.config.seed + epoch)
@@ -160,6 +169,7 @@ class TrainingVisualizationCallback(BaseCallback):
         history_angle_turns: list[float] = []
         history_velocity_turns_per_s: list[float] = []
         history_torque_nm: list[float] = []
+        history_gravity_torque_abs_nm: list[float] = []
         history_reward: list[float] = []
         history_cum_reward: list[float] = []
         cumulative_reward = 0.0
@@ -174,15 +184,18 @@ class TrainingVisualizationCallback(BaseCallback):
             history_angle_turns.append(float(info["theta_turns"]))
             history_velocity_turns_per_s.append(float(info["theta_dot_turns_per_s"]))
             history_torque_nm.append(float(info["applied_torque_nm"]))
+            history_gravity_torque_abs_nm.append(float(info.get("gravity_torque_abs_nm", abs(float(info.get("gravity_torque_nm", 0.0))))))
             history_reward.append(float(reward))
             history_cum_reward.append(cumulative_reward)
 
             if terminated or truncated:
                 break
 
-        fig, axes = plt.subplots(5, 1, figsize=(12, 14), sharex=True)
+        target_ref_turns = self._nearest_half_turn_reference(history_angle_turns)
+
+        fig, axes = plt.subplots(6, 1, figsize=(12, 16), sharex=True)
         axes[0].plot(history_time, history_angle_turns, label="angle (turns)")
-        axes[0].axhline(self.config.reward.target_phase_turns, linestyle="--", label="target phase")
+        axes[0].axhline(target_ref_turns, linestyle="--", label=f"nearest half-turn ref ({target_ref_turns:.2f})")
         axes[0].set_ylabel("turns")
         axes[0].set_title("Angle")
         axes[0].legend(loc="best")
@@ -197,16 +210,21 @@ class TrainingVisualizationCallback(BaseCallback):
         axes[2].set_title("Torque")
         axes[2].legend(loc="best")
 
-        axes[3].plot(history_time, history_reward, label="instant reward")
-        axes[3].set_ylabel("reward")
-        axes[3].set_title("Instantaneous Reward")
+        axes[3].plot(history_time, history_gravity_torque_abs_nm, label="|gravity torque| (Nm)")
+        axes[3].set_ylabel("Nm")
+        axes[3].set_title("Gravity Torque Magnitude")
         axes[3].legend(loc="best")
 
-        axes[4].plot(history_time, history_cum_reward, label="cumulative reward")
-        axes[4].set_xlabel("time (s)")
-        axes[4].set_ylabel("cum reward")
-        axes[4].set_title("Cumulative Reward")
+        axes[4].plot(history_time, history_reward, label="instant reward")
+        axes[4].set_ylabel("reward")
+        axes[4].set_title("Instantaneous Reward")
         axes[4].legend(loc="best")
+
+        axes[5].plot(history_time, history_cum_reward, label="cumulative reward")
+        axes[5].set_xlabel("time (s)")
+        axes[5].set_ylabel("cum reward")
+        axes[5].set_title("Cumulative Reward")
+        axes[5].legend(loc="best")
 
         fig.suptitle(f"Training snapshot epoch {epoch}")
         fig.tight_layout(rect=[0, 0.02, 1, 0.98])
