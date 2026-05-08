@@ -16,8 +16,8 @@ class RandomizationConfig:
     coulomb_friction_max: float = 0.2
     gravity_min: float = 9.0
     gravity_max: float = 11.0
-    observation_position_sigma_turns: float = 0.002
-    observation_velocity_sigma_turns_per_s: float = 0.05
+    observation_position_sigma_turns: float = 0.0002
+    observation_velocity_sigma_turns_per_s: float = 0.005
     observation_torque_sigma_nm: float = 0.01
     control_jitter_std_s: float = 0.02
     control_jitter_max_s: float = 0.05
@@ -30,9 +30,9 @@ class RandomizationConfig:
 @dataclass(slots=True)
 class RewardConfig:
     upright_weight: float = 2.5
-    energy_weight: float = 1.5
-    velocity_penalty_weight: float = 0.05
-    torque_penalty_weight: float = 0.015
+    energy_weight: float = 2
+    velocity_penalty_weight: float = 0.02
+    torque_penalty_weight: float = 0.05
     torque_saturation_penalty_weight: float = 0.2
     # Normalized torque above which saturation is considered (fraction of max torque)
     torque_saturation_threshold: float = 0.95
@@ -58,8 +58,8 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class PendulumConfig:
-    mass_kg: float = 0.1
-    length_m: float = 0.3
+    mass_kg: float = 0.05
+    length_m: float = 0.2
     max_torque_nm: float = 1.0
     control_hz: float = 50.0
     physics_hz: float = 1000.0
