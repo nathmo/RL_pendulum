@@ -58,7 +58,7 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class PendulumConfig:
-    mass_kg: float = 0.3
+    mass_kg: float = 0.2
     length_m: float = 0.75
     max_torque_nm: float = 1.0
     control_hz: float = 50.0
