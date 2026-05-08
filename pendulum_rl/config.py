@@ -18,13 +18,13 @@ class RandomizationConfig:
     gravity_max: float = 11.0
     observation_position_sigma_turns: float = 0.0002
     observation_velocity_sigma_turns_per_s: float = 0.005
-    observation_torque_sigma_nm: float = 0.01
-    control_jitter_std_s: float = 0.02
-    control_jitter_max_s: float = 0.05
+    observation_torque_sigma_nm: float = 0.001
+    control_jitter_std_s: float = 0.002
+    control_jitter_max_s: float = 0.005
     command_delay_mean_s: float = 0.005
-    command_delay_std_s: float = 0.01
-    command_delay_max_s: float = 0.05
-    packet_drop_prob: float = 0.02
+    command_delay_std_s: float = 0.001
+    command_delay_max_s: float = 0.005
+    packet_drop_prob: float = 0.002
 
 
 @dataclass(slots=True)
@@ -58,7 +58,7 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class PendulumConfig:
-    mass_kg: float = 0.033
+    mass_kg: float = 0.05
     length_m: float = 0.75
     max_torque_nm: float = 1.0
     control_hz: float = 50.0
