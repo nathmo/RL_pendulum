@@ -1,7 +1,7 @@
 {
   "model_path": "artifacts_noload\\pendulum_ppo.zip",
   "onnx_path": "artifacts_noload\\pendulum_policy.onnx",
-  "total_timesteps": 400000,
+  "total_timesteps": 100000,
   "seed": 7,
   "n_envs": 1,
   "checkpoint_dir": "artifacts_noload\\checkpoints",
