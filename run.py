@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import math
+import statistics
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import moteus
@@ -85,6 +88,111 @@ def _compute_live_score(
         "rolling_rev_turns": float(rolling_rev),
         "rolling_penalty": float(rolling_penalty),
     }
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return float("nan")
+    return float(np.percentile(np.asarray(values, dtype=np.float64), percentile))
+
+
+def _print_latency_summary(samples: list[dict[str, float]]) -> None:
+    if not samples:
+        print("[LATENCY] No samples collected")
+        return
+
+    rtts = [sample["rtt_s"] for sample in samples]
+    loop_dts = [sample["loop_dt_s"] for sample in samples if not math.isnan(sample["loop_dt_s"])]
+    jitters = [sample["jitter_s"] for sample in samples if not math.isnan(sample["jitter_s"])]
+    overruns = [sample["overrun_s"] for sample in samples]
+    missed = sum(1 for sample in samples if sample["missed_deadline"] > 0.5)
+
+    print("[LATENCY] Summary")
+    print(f"  samples: {len(samples)}")
+    print(f"  round-trip mean/std/p95/max: {statistics.mean(rtts):.6f}s / {statistics.pstdev(rtts):.6f}s / {_percentile(rtts, 95.0):.6f}s / {max(rtts):.6f}s")
+    if loop_dts:
+        print(f"  loop dt mean/std/p95/max: {statistics.mean(loop_dts):.6f}s / {statistics.pstdev(loop_dts):.6f}s / {_percentile(loop_dts, 95.0):.6f}s / {max(loop_dts):.6f}s")
+    if jitters:
+        print(f"  jitter mean/std/p95/max: {statistics.mean(jitters):.6f}s / {statistics.pstdev(jitters):.6f}s / {_percentile(jitters, 95.0):.6f}s / {max(jitters, key=abs):.6f}s")
+    print(f"  control overrun mean/p95/max: {statistics.mean(overruns):.6f}s / {_percentile(overruns, 95.0):.6f}s / {max(overruns):.6f}s")
+    print(f"  missed deadlines: {missed}/{len(samples)}")
+
+
+async def run_latency_probe(rate_hz: float, max_torque: float, watchdog_timeout: float, samples: int, csv_path: Optional[Path], debug: bool) -> None:
+    period_s = 1.0 / rate_hz
+
+    qr = moteus.QueryResolution()
+    qr.position = moteus.F32
+    qr.velocity = moteus.F32
+    qr.torque = moteus.F32
+    controller = moteus.Controller(id=1, query_resolution=qr)
+
+    await controller.set_stop(query=False)
+    await controller.query()
+
+    samples_out: list[dict[str, float]] = []
+    previous_cycle_start: float | None = None
+
+    try:
+        for step in range(samples):
+            cycle_start = time.perf_counter()
+            loop_dt = float("nan") if previous_cycle_start is None else cycle_start - previous_cycle_start
+            jitter = float("nan") if previous_cycle_start is None else loop_dt - period_s
+
+            command_start = time.perf_counter()
+            res = await controller.set_position(
+                position=math.nan,
+                velocity=math.nan,
+                feedforward_torque=0.0,
+                maximum_torque=max_torque,
+                watchdog_timeout=watchdog_timeout,
+                kp_scale=0.0,
+                kd_scale=0.0,
+                ignore_position_bounds=1,
+                query=True,
+            )
+            response_time = time.perf_counter()
+            rtt_s = response_time - command_start
+            overrun_s = max(0.0, response_time - cycle_start - period_s)
+            missed_deadline = 1.0 if rtt_s > period_s else 0.0
+
+            samples_out.append(
+                {
+                    "step": float(step),
+                    "cycle_start_s": float(cycle_start),
+                    "rtt_s": float(rtt_s),
+                    "loop_dt_s": float(loop_dt),
+                    "jitter_s": float(jitter),
+                    "overrun_s": float(overrun_s),
+                    "missed_deadline": float(missed_deadline),
+                }
+            )
+
+            if debug:
+                print(
+                    f"[LATENCY] step={step} rtt={rtt_s*1000.0:.3f}ms loop_dt={loop_dt*1000.0 if not math.isnan(loop_dt) else float('nan'):.3f}ms "
+                    f"jitter={jitter*1000.0 if not math.isnan(jitter) else float('nan'):.3f}ms overrun={overrun_s*1000.0:.3f}ms"
+                )
+
+            elapsed = time.perf_counter() - cycle_start
+            if elapsed < period_s:
+                await asyncio.sleep(period_s - elapsed)
+            previous_cycle_start = cycle_start
+
+        if csv_path is not None:
+            csv_path.parent.mkdir(parents=True, exist_ok=True)
+            with csv_path.open("w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=list(samples_out[0].keys()))
+                writer.writeheader()
+                writer.writerows(samples_out)
+            print(f"[LATENCY] Wrote sample log to {csv_path}")
+
+        _print_latency_summary(samples_out)
+    finally:
+        try:
+            await controller.set_stop(query=True)
+        except Exception:
+            pass
 
 
 async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watchdog_timeout: float, debug: bool) -> None:
@@ -193,14 +301,22 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a pendulum ONNX policy on moteus hardware (20-dim obs)")
-    parser.add_argument("--model", required=True, help="Path to the exported .onnx policy")
+    parser.add_argument("--model", default=None, help="Path to the exported .onnx policy")
     parser.add_argument("--rate", type=float, default=50.0, help="Control rate in Hz")
     parser.add_argument("--max-torque", type=float, default=1.0, help="Maximum torque to command (Nm)")
     parser.add_argument("--watchdog", type=float, default=0.1, help="Watchdog timeout (s)")
     parser.add_argument("--debug", action="store_true", help="Print telemetry every cycle")
+    parser.add_argument("--measure-latency", action="store_true", help="Run a zero-torque latency/jitter probe instead of the policy loop")
+    parser.add_argument("--measure-samples", type=int, default=500, help="Number of samples to collect in latency-probe mode")
+    parser.add_argument("--csv", type=Path, default=None, help="Optional CSV output path for latency probe samples")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(run_hardware(Path(args.model), args.rate, args.max_torque, args.watchdog, args.debug))
+    if args.measure_latency:
+        asyncio.run(run_latency_probe(args.rate, args.max_torque, args.watchdog, args.measure_samples, args.csv, args.debug))
+    else:
+        if args.model is None:
+            raise SystemExit("--model is required unless --measure-latency is set")
+        asyncio.run(run_hardware(Path(args.model), args.rate, args.max_torque, args.watchdog, args.debug))

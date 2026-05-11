@@ -131,6 +131,25 @@ source .venv/bin/activate
 python run.py --model /home/pi/RL_pendulum/artifacts/pendulum_policy.onnx --debug
 ```
 
+### Measure control-loop latency and jitter
+
+To measure the real host-to-controller round-trip time and timing jitter on the live hardware loop, run the built-in probe mode. It sends zero torque, queries the controller every cycle, and prints summary statistics plus an optional CSV file.
+
+```bash
+source .venv/bin/activate
+python run.py --measure-latency --rate 50 --measure-samples 1000 --csv latency_probe.csv --debug
+```
+
+What you get:
+
+- `rtt_s`: command-to-response round-trip time for each controller update.
+- `loop_dt_s`: actual time between loop starts.
+- `jitter_s`: loop start interval minus the target period.
+- `overrun_s`: how much the response missed the intended period.
+- summary mean/std/p95/max values at the end.
+
+If you want a truer end-to-end plant delay, drive a repeatable step input and correlate the torque change with encoder motion or an external sensor. The probe above measures the software/control-transport timing, which is usually the first thing to stabilize.
+
 ### Raspberry Pi 3B stability notes
 
 Pi 3B uses a specific onnxruntime version (1.20.1) to avoid C++ memory access bugs in older/newer versions. Use the dedicated Pi3 requirements file:
