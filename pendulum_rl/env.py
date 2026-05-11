@@ -84,6 +84,12 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         self._gravity = 9.81
         # rotation history: deque of (time_s, theta_turns)
         self._rotation_history: deque[tuple[float, float]] = deque()
+        
+        # Perturbation tracking
+        self._injected_torque_nm = 0.0  # External torque being injected
+        self._perturbation_end_substep = 0  # When current perturbation ends
+        self._tip_force_n = 0.0  # Tangential force at pendulum tip (N)
+        self._injected_force_history: deque[tuple[float, float]] = deque()  # (time_s, force_magnitude)
 
     def _apply_randomization(self) -> dict[str, float]:
         rand = self.config.randomization
@@ -109,6 +115,31 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "coulomb_friction": self._coulomb_friction,
             "gravity": self._gravity,
         }
+
+    def _maybe_inject_perturbation(self) -> None:
+        """Inject random external torque or force with configured probability."""
+        pert_cfg = self.config.perturbation
+        
+        # Check if current perturbation has ended
+        if self._substep_index >= self._perturbation_end_substep:
+            # Decide if we should inject a new perturbation
+            if float(self.np_random.random()) < pert_cfg.injection_probability:
+                # Inject torque at the hinge joint
+                magnitude = float(self.np_random.uniform(-pert_cfg.max_torque_nm, pert_cfg.max_torque_nm))
+                self._injected_torque_nm = magnitude
+                
+                # Optionally also inject tangential force at tip
+                if float(self.np_random.random()) < pert_cfg.tip_force_probability:
+                    self._tip_force_n = float(self.np_random.uniform(-pert_cfg.max_tip_force_n, pert_cfg.max_tip_force_n))
+                else:
+                    self._tip_force_n = 0.0
+                
+                # Set when this perturbation should end
+                duration_substeps = max(1, int(round(pert_cfg.injection_duration_s / self.config.physics_dt)))
+                self._perturbation_end_substep = self._substep_index + duration_substeps
+            else:
+                self._injected_torque_nm = 0.0
+                self._tip_force_n = 0.0
 
     def _raw_measurement(self) -> tuple[float, float, float]:
         theta = float(self.data.qpos[self._hinge_qposadr])
@@ -147,8 +178,36 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
 
         theta_dot_turns_per_s = radians_to_turns(theta_dot)
         vel_penalty = (theta_dot_turns_per_s / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
+        
+        # --- Smart torque penalty aware of perturbations ---
+        # If external torque/force is being injected, don't penalize the control effort as harshly
+        # Instead, reward the agent for recovering/stabilizing the system
+        external_disturbance_magnitude = abs(self._injected_torque_nm) + abs(self._tip_force_n)
+        
         torque_norm = commanded_torque_nm / max(self.config.max_torque_nm, 1e-6)
-        torque_penalty = torque_norm ** 2
+        
+        # Base torque penalty
+        base_torque_penalty = torque_norm ** 2
+        
+        # If there's significant external disturbance, modulate the penalty
+        if external_disturbance_magnitude > 1e-6:
+            # Normalize disturbance magnitude
+            max_possible_disturbance = self.config.perturbation.max_torque_nm + self.config.perturbation.max_tip_force_n
+            disturbance_norm = min(1.0, external_disturbance_magnitude / max(max_possible_disturbance, 1e-6))
+            
+            # When disturbance is present, reduce the torque penalty (allow higher control effort to counter it)
+            # but only if the control is actually counter-acting the disturbance
+            # This is a simple heuristic: if commanded torque is in opposite direction to injected torque, reward it
+            if abs(self._injected_torque_nm) > 1e-6:
+                torque_alignment = (self._injected_torque_nm * commanded_torque_nm) / (abs(self._injected_torque_nm) * abs(commanded_torque_nm) + 1e-6)
+                # If controller is opposing the disturbance (negative alignment), reduce penalty
+                if torque_alignment < -0.3:  # Somewhat opposed
+                    base_torque_penalty *= max(0.2, 1.0 - 0.8 * disturbance_norm)
+            else:
+                # No opposing torque disturbance, just reduce penalty due to presence of disturbance
+                base_torque_penalty *= max(0.3, 1.0 - 0.7 * disturbance_norm)
+        
+        torque_penalty = base_torque_penalty
         # --- Duration-sensitive (thermal-like) torque saturation penalty ---
         # Compute normalized excess above the saturation threshold
         threshold = float(getattr(reward_cfg, "torque_saturation_threshold", 0.95))
@@ -213,6 +272,9 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "theta_turns": theta_turns,
             "theta_dot_turns_per_s": theta_dot_turns_per_s,
             "commanded_torque_nm": commanded_torque_nm,
+            "injected_torque_nm": self._injected_torque_nm,
+            "injected_force_n": self._tip_force_n,
+            "external_disturbance_magnitude": external_disturbance_magnitude,
             "torque_norm": torque_norm,
             "torque_saturation_penalty": torque_saturation_penalty,
             "torque_saturation_integrator": float(self._torque_saturation_integrator),
@@ -235,10 +297,31 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             self._pending_apply_substep = self._substep_index + delay_steps
 
         for _ in range(hold_steps):
+            # Check if we need to inject a new perturbation
+            if self._substep_index % max(1, int(round(self.config.control_dt / self.config.physics_dt))) == 0:
+                self._maybe_inject_perturbation()
+            
             if self._substep_index >= self._pending_apply_substep:
                 self._active_torque_nm = self._pending_torque_nm
 
-            self.data.ctrl[0] = np.clip(self._active_torque_nm, -self.config.max_torque_nm, self.config.max_torque_nm)
+            # Apply commanded torque + injected perturbation torque
+            total_torque = self._active_torque_nm + self._injected_torque_nm
+            self.data.ctrl[0] = np.clip(total_torque, -self.config.max_torque_nm * 2, self.config.max_torque_nm * 2)
+            
+            # Apply tangential force at pendulum tip if present
+            if abs(self._tip_force_n) > 1e-6:
+                # Get pendulum angle to compute force direction
+                theta = float(self.data.qpos[self._hinge_qposadr])
+                # Tangential (perpendicular to rod) direction in the plane of rotation
+                # For a 2D pendulum rotating about y-axis, force is in x-z plane
+                # Perpendicular to rod direction is: (-sin(theta), 0, -cos(theta)) normalized
+                force_x = -self._tip_force_n * np.sin(theta)
+                force_z = -self._tip_force_n * np.cos(theta)
+                
+                # Apply force at tip body
+                self.data.xfrc_applied[self._tip_body_id, 0] = force_x  # x component
+                self.data.xfrc_applied[self._tip_body_id, 2] = force_z  # z component (gravity is in -z)
+            
             mujoco.mj_step(self.model, self.data)
             self._substep_index += 1
 
@@ -249,6 +332,8 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
 
         randomization = self._apply_randomization()
         mujoco.mj_resetData(self.model, self.data)
+        # Clear external forces
+        self.data.xfrc_applied[:] = 0.0
 
         position_turns = float(
             self.np_random.uniform(
@@ -271,6 +356,10 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         self._episode_step = 0
         self._success_counter = 0
         self._last_commanded_torque_nm = 0.0
+        # Reset perturbation state
+        self._injected_torque_nm = 0.0
+        self._tip_force_n = 0.0
+        self._perturbation_end_substep = 0
         mujoco.mj_forward(self.model, self.data)
 
         observation = self._observation_builder.reset(position_turns, velocity_turns_per_s, 0.0)
@@ -292,6 +381,9 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         commanded_torque_nm = requested * self.config.max_torque_nm
         previous_commanded_torque_nm = self._last_commanded_torque_nm
         self._last_commanded_torque_nm = commanded_torque_nm
+        
+        # Clear external forces at start of step (will be reapplied if needed during simulation)
+        self.data.xfrc_applied[:] = 0.0
 
         self._simulate_control_interval(commanded_torque_nm)
         reward, metrics = self._compute_reward(commanded_torque_nm, previous_commanded_torque_nm)

@@ -28,6 +28,21 @@ class RandomizationConfig:
 
 
 @dataclass(slots=True)
+class PerturbationConfig:
+    """Configuration for random external torque and force perturbations during training."""
+    # Probability (0-1) of injecting perturbation on each control step
+    injection_probability: float = 0.3
+    # Duration of perturbation injection (seconds)
+    injection_duration_s: float = 0.2
+    # Maximum magnitude of injected torque (N*m)
+    max_torque_nm: float = 0.3
+    # Probability of injecting a tangential force at the pendulum tip (perpendicular to rod)
+    tip_force_probability: float = 0.1
+    # Maximum magnitude of tangential force at tip (N)
+    max_tip_force_n: float = 0.5
+
+
+@dataclass(slots=True)
 class RewardConfig:
     upright_weight: float = 2.5
     energy_weight: float = 2
@@ -86,6 +101,7 @@ class PendulumConfig:
     ppo_n_epochs: int = 10
     ppo_n_envs: int = 1
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
+    perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)
 
     @property
