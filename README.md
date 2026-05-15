@@ -1,6 +1,6 @@
 # Inverted Pendulum RL
 
-This project trains a policy for a direct-drive inverted pendulum with a 0.5 m massless rod and a 0.5 kg tip mass, using a maximum torque of 1.0 N·m.
+This project trains a policy for a direct-drive inverted pendulum with a 0.75 m massless rod and a 0.03 kg tip mass, using a maximum torque of 1.0 N·m.
 
 The implementation plan is documented in [PENDULUM_RL_PLAN.md](PENDULUM_RL_PLAN.md).
 

@@ -26,9 +26,9 @@ def _make_xml(config: PendulumConfig) -> str:
   <worldbody>
     <body name="pivot" pos="0 0 0">
       <joint name="hinge" type="hinge" axis="0 1 0" limited="false"/>
-      <geom name="rod" type="capsule" fromto="0 0 0 0 0 {config.length_m}" size="0.01" density="0"/>
+            <geom name="rod" type="capsule" fromto="0 0 0 0 0 {config.length_m}" size="0.01" density="0"/>
       <body name="tip" pos="0 0 {config.length_m}">
-        <geom name="tip_mass" type="sphere" size="0.03" mass="{config.mass_kg}"/>
+                <geom name="tip_mass" type="sphere" size="{config.tip_radius_m}" mass="{config.tip_mass_kg}"/>
       </body>
     </body>
   </worldbody>
@@ -78,7 +78,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         # thermal-style integrator for torque saturation (normalized 0..1)
         self._torque_saturation_integrator = 0.0
         self._length_m = self.config.length_m
-        self._mass_kg = self.config.mass_kg
+        self._tip_mass_kg = self.config.tip_mass_kg
         self._viscous_friction = 0.0
         self._coulomb_friction = 0.0
         self._gravity = 9.81
@@ -93,24 +93,19 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
 
     def _apply_randomization(self) -> dict[str, float]:
         rand = self.config.randomization
-        self._mass_kg = self.config.mass_kg * self.np_random.uniform(rand.mass_scale_min, rand.mass_scale_max)
+        self._tip_mass_kg = self.config.tip_mass_kg * self.np_random.uniform(rand.mass_scale_min, rand.mass_scale_max)
         self._length_m = self.config.length_m * self.np_random.uniform(rand.length_scale_min, rand.length_scale_max)
         self._viscous_friction = self.np_random.uniform(rand.viscous_friction_min, rand.viscous_friction_max)
         self._coulomb_friction = self.np_random.uniform(rand.coulomb_friction_min, rand.coulomb_friction_max)
         self._gravity = self.np_random.uniform(rand.gravity_min, rand.gravity_max)
 
-        tip_mass = self._mass_kg
-        radius = 0.03
-        sphere_inertia = 0.4 * tip_mass * radius * radius
-        self.model.body_mass[self._tip_body_id] = tip_mass
-        self.model.body_inertia[self._tip_body_id] = np.array([sphere_inertia, sphere_inertia, sphere_inertia], dtype=np.float64)
-        self.model.body_pos[self._tip_body_id] = np.array([0.0, 0.0, self._length_m], dtype=np.float64)
         self.model.dof_damping[self._hinge_dofadr] = self._viscous_friction
         self.model.dof_frictionloss[self._hinge_dofadr] = self._coulomb_friction
         self.model.opt.gravity[:] = np.array([0.0, 0.0, -self._gravity], dtype=np.float64)
         return {
-            "mass_kg": self._mass_kg,
+            "tip_mass_kg": self._tip_mass_kg,
             "length_m": self._length_m,
+            "pivot_inertia_kgm2": self._tip_mass_kg * self._length_m**2,
             "viscous_friction": self._viscous_friction,
             "coulomb_friction": self._coulomb_friction,
             "gravity": self._gravity,
@@ -167,13 +162,15 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         phase_error_turns = ((theta_turns - reward_cfg.target_phase_turns + 0.5) % 1.0) - 0.5
 
         upright = 0.5 * (1.0 + np.cos(2.0 * np.pi * phase_error_turns))
-        potential = self._mass_kg * self._gravity * self._length_m * (1.0 - np.cos(theta))
-        kinetic = 0.5 * self._mass_kg * (self._length_m * theta_dot) ** 2
+        lever_arm_m = self._tip_mass_kg * self._length_m
+        pivot_inertia_kgm2 = self._tip_mass_kg * self._length_m**2
+        potential = self._gravity * lever_arm_m * (1.0 - np.cos(theta))
+        kinetic = 0.5 * pivot_inertia_kgm2 * theta_dot**2
         energy = potential + kinetic
-        target_energy = 2.0 * self._mass_kg * self._gravity * self._length_m
+        target_energy = 2.0 * self._gravity * lever_arm_m
         energy_error = abs(energy - target_energy)
         energy_reward = np.exp(-energy_error / max(reward_cfg.energy_scale, 1e-6))
-        gravity_torque_nm = -self._mass_kg * self._gravity * self._length_m * np.sin(theta)
+        gravity_torque_nm = -self._gravity * lever_arm_m * np.sin(theta)
         gravity_torque_abs_nm = abs(gravity_torque_nm)
 
         theta_dot_turns_per_s = radians_to_turns(theta_dot)
@@ -269,6 +266,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "energy_reward": energy_reward,
             "gravity_torque_nm": gravity_torque_nm,
             "gravity_torque_abs_nm": gravity_torque_abs_nm,
+            "pivot_inertia_kgm2": pivot_inertia_kgm2,
             "theta_turns": theta_turns,
             "theta_dot_turns_per_s": theta_dot_turns_per_s,
             "commanded_torque_nm": commanded_torque_nm,
@@ -368,6 +366,8 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "time_s": 0.0,
             "position_turns": position_turns,
             "velocity_turns_per_s": velocity_turns_per_s,
+            "pivot_inertia_kgm2": self.config.pivot_inertia_kgm2,
+            "tip_mass_kg": self._tip_mass_kg,
         }
         # initialize rotation history with the starting state at t=0
         self._rotation_history.clear()

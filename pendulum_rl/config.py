@@ -6,10 +6,10 @@ from typing import Any
 
 @dataclass(slots=True)
 class RandomizationConfig:
-    mass_scale_min: float = 0.5
-    mass_scale_max: float = 2.0
-    length_scale_min: float = 0.5
-    length_scale_max: float = 2.0
+    mass_scale_min: float = 1.0
+    mass_scale_max: float = 1.0
+    length_scale_min: float = 1.0
+    length_scale_max: float = 1.0
     viscous_friction_min: float = 0.0
     viscous_friction_max: float = 0.2
     coulomb_friction_min: float = 0.0
@@ -73,8 +73,9 @@ class RewardConfig:
 
 @dataclass(slots=True)
 class PendulumConfig:
-    mass_kg: float = 0.05
-    length_m: float = 0.41
+    length_m: float = 0.75
+    tip_mass_kg: float = 0.03
+    tip_radius_m: float = 0.03
     max_torque_nm: float = 1.0
     control_hz: float = 50.0
     physics_hz: float = 1000.0
@@ -119,6 +120,10 @@ class PendulumConfig:
     @property
     def episode_steps(self) -> int:
         return int(round(self.episode_seconds * self.control_hz))
+
+    @property
+    def pivot_inertia_kgm2(self) -> float:
+        return self.tip_mass_kg * self.length_m**2
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

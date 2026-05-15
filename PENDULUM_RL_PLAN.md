@@ -15,8 +15,8 @@ The system should be explicit, visually inspectable, and easy to iterate on.
 - Direct-drive motor.
 - Torque limit: `+- 1.0 N·m`.
 - Rod: massless.
-- Tip mass: `0.5 kg`.
-- Rod length: `0.5 m`.
+- Tip mass: `0.03 kg`.
+- Rod length: `0.75 m`.
 - Position is reported in absolute turns and does not wrap at each revolution.
 - Available telemetry: position, velocity, torque.
 - Control input: torque command.

@@ -11,13 +11,14 @@ env = PendulumSwingUpEnv(cfg)
 
 print("model.opt.gravity:", env.model.opt.gravity)
 print("config.gravity (applied via randomization) default:", cfg.randomization.gravity_min, "to", cfg.randomization.gravity_max)
+print("nominal pivot inertia (kg m^2):", cfg.pivot_inertia_kgm2)
 
 # target phase (turns)
 target_turns = cfg.reward.target_phase_turns
 theta = turns_to_radians(target_turns)
 print(f"target_phase_turns: {target_turns} turns -> theta rad: {theta}")
 
-m = cfg.mass_kg
+m = cfg.tip_mass_kg
 l = cfg.length_m
 g = env._gravity
 # gravity torque for simple pendulum (approx): -m * g * l * sin(theta)

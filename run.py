@@ -47,10 +47,12 @@ def _compute_live_score(
     phase_error_turns = ((position_turns - reward_cfg.target_phase_turns + 0.5) % 1.0) - 0.5
 
     upright = 0.5 * (1.0 + math.cos(2.0 * math.pi * phase_error_turns))
-    potential = config.mass_kg * 9.81 * config.length_m * (1.0 - math.cos(theta))
-    kinetic = 0.5 * config.mass_kg * (config.length_m * theta_dot) ** 2
+    lever_arm_m = config.tip_mass_kg * config.length_m
+    pivot_inertia_kgm2 = config.tip_mass_kg * config.length_m**2
+    potential = 9.81 * lever_arm_m * (1.0 - math.cos(theta))
+    kinetic = 0.5 * pivot_inertia_kgm2 * theta_dot**2
     energy = potential + kinetic
-    target_energy = 2.0 * config.mass_kg * 9.81 * config.length_m
+    target_energy = 2.0 * 9.81 * lever_arm_m
     energy_error = abs(energy - target_energy)
     energy_reward = math.exp(-energy_error / max(reward_cfg.energy_scale, 1e-6))
 
@@ -85,6 +87,7 @@ def _compute_live_score(
         "upright": float(upright),
         "phase_error_turns": float(phase_error_turns),
         "energy_reward": float(energy_reward),
+        "pivot_inertia_kgm2": float(pivot_inertia_kgm2),
         "rolling_rev_turns": float(rolling_rev),
         "rolling_penalty": float(rolling_penalty),
     }
