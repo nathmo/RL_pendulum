@@ -45,6 +45,7 @@ class PerturbationConfig:
 @dataclass(slots=True)
 class RewardConfig:
     upright_weight: float = 2.5
+    upright_exponential_scale_turns: float = 0.08
     energy_weight: float = 2
     velocity_penalty_weight: float = 0.02
     torque_penalty_weight: float = 0.05
@@ -63,6 +64,9 @@ class RewardConfig:
     success_velocity_threshold_turns_per_s: float = 0.08
     energy_scale: float = 0.35
     velocity_scale_turns_per_s: float = 2.0
+    steady_state_error_weight: float = 1.5
+    steady_state_error_growth_rate: float = 2.5
+    steady_state_error_hold_threshold_turns: float = 0.08
     # Rolling-average penalty (seconds)
     rolling_window_s: float = 5.0
     # Weight applied to rolling average speed penalty

@@ -77,6 +77,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         self._torque_saturation_integrator = 0.0
         # thermal-style integrator for torque saturation (normalized 0..1)
         self._torque_saturation_integrator = 0.0
+        self._steady_state_error_time_s = 0.0
         self._length_m = self.config.length_m
         self._tip_mass_kg = self.config.tip_mass_kg
         self._viscous_friction = 0.0
@@ -160,8 +161,10 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         theta_dot = float(self.data.qvel[self._hinge_dofadr])
         theta_turns = radians_to_turns(theta)
         phase_error_turns = ((theta_turns - reward_cfg.target_phase_turns + 0.5) % 1.0) - 0.5
+        abs_phase_error_turns = abs(phase_error_turns)
 
-        upright = 0.5 * (1.0 + np.cos(2.0 * np.pi * phase_error_turns))
+        upright_scale = max(float(reward_cfg.upright_exponential_scale_turns), 1e-6)
+        upright = float(np.exp(-((abs_phase_error_turns / upright_scale) ** 2)))
         lever_arm_m = self._tip_mass_kg * self._length_m
         pivot_inertia_kgm2 = self._tip_mass_kg * self._length_m**2
         potential = self._gravity * lever_arm_m * (1.0 - np.cos(theta))
@@ -254,6 +257,16 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
                 rolling_penalty = float(reward_cfg.rolling_penalty_weight) * norm
                 reward -= rolling_penalty
 
+        if abs_phase_error_turns <= float(reward_cfg.steady_state_error_hold_threshold_turns):
+            self._steady_state_error_time_s += dt
+        else:
+            self._steady_state_error_time_s = 0.0
+
+        steady_state_error_penalty = float(reward_cfg.steady_state_error_weight) * float(
+            np.exp(float(reward_cfg.steady_state_error_growth_rate) * self._steady_state_error_time_s) - 1.0
+        ) * abs_phase_error_turns
+        reward -= steady_state_error_penalty
+
 
         success = upright >= reward_cfg.success_upright_threshold and abs(theta_dot_turns_per_s) <= reward_cfg.success_velocity_threshold_turns_per_s
         self._success_counter = self._success_counter + 1 if success else 0
@@ -263,6 +276,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         metrics = {
             "upright": upright,
             "phase_error_turns": phase_error_turns,
+            "abs_phase_error_turns": abs_phase_error_turns,
             "energy_reward": energy_reward,
             "gravity_torque_nm": gravity_torque_nm,
             "gravity_torque_abs_nm": gravity_torque_abs_nm,
@@ -276,6 +290,8 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "torque_norm": torque_norm,
             "torque_saturation_penalty": torque_saturation_penalty,
             "torque_saturation_integrator": float(self._torque_saturation_integrator),
+            "steady_state_error_time_s": float(self._steady_state_error_time_s),
+            "steady_state_error_penalty": steady_state_error_penalty,
             "rolling_rev_turns": rolling_rev,
             "rolling_penalty": rolling_penalty,
         }
@@ -358,6 +374,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         self._injected_torque_nm = 0.0
         self._tip_force_n = 0.0
         self._perturbation_end_substep = 0
+        self._steady_state_error_time_s = 0.0
         mujoco.mj_forward(self.model, self.data)
 
         observation = self._observation_builder.reset(position_turns, velocity_turns_per_s, 0.0)
