@@ -31,7 +31,7 @@ class RandomizationConfig:
 class PerturbationConfig:
     """Configuration for random external torque and force perturbations during training."""
     # Probability (0-1) of injecting perturbation on each control step
-    injection_probability: float = 0.3
+    injection_probability: float = 0.15
     # Duration of perturbation injection (seconds)
     injection_duration_s: float = 0.2
     # Maximum magnitude of injected torque (N*m)
@@ -90,17 +90,19 @@ class PendulumConfig:
     seed: int = 7
     export_opset: int = 13
     ppo_total_timesteps: int = 1_000_000
-    ppo_n_steps: int = 2048
+    ppo_n_steps: int = 1024
     ppo_batch_size: int = 256
     ppo_learning_rate: float = 3e-4
+    ppo_learning_rate_final: float = 3e-5
     ppo_gamma: float = 0.99
     ppo_gae_lambda: float = 0.95
     ppo_clip_range: float = 0.2
-    ppo_ent_coef: float = 0.0
+    ppo_ent_coef: float = 0.002
     ppo_vf_coef: float = 0.5
     ppo_max_grad_norm: float = 0.5
     ppo_n_epochs: int = 10
-    ppo_n_envs: int = 1
+    ppo_target_kl: float = 0.02
+    ppo_n_envs: int = 8
     randomization: RandomizationConfig = field(default_factory=RandomizationConfig)
     perturbation: PerturbationConfig = field(default_factory=PerturbationConfig)
     reward: RewardConfig = field(default_factory=RewardConfig)

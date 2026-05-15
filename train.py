@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from copy import deepcopy
 from pathlib import Path
 
 import matplotlib
@@ -29,6 +30,17 @@ def make_env(config: PendulumConfig, seed: int):
     return _init
 
 
+def linear_schedule(start: float, end: float):
+    start = float(start)
+    end = float(end)
+
+    def _schedule(progress_remaining: float) -> float:
+        progress = 1.0 - float(progress_remaining)
+        return start + (end - start) * progress
+
+    return _schedule
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a pendulum PPO policy and export ONNX")
     parser.add_argument("--output-dir", type=Path, default=Path("artifacts"), help="Directory for models and metadata")
@@ -45,13 +57,45 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def make_eval_env(config: PendulumConfig):
+def make_eval_env(config: PendulumConfig, seed: int):
     def _init():
         env = PendulumSwingUpEnv(config=config)
-        env.reset(seed=config.seed + 10_000)
+        env.reset(seed=seed)
         return Monitor(env)
 
     return _init
+
+
+def make_clean_eval_config(config: PendulumConfig) -> PendulumConfig:
+    clean_config = deepcopy(config)
+    rand = clean_config.randomization
+    rand.mass_scale_min = 1.0
+    rand.mass_scale_max = 1.0
+    rand.length_scale_min = 1.0
+    rand.length_scale_max = 1.0
+    rand.viscous_friction_min = 0.0
+    rand.viscous_friction_max = 0.0
+    rand.coulomb_friction_min = 0.0
+    rand.coulomb_friction_max = 0.0
+    rand.gravity_min = 9.81
+    rand.gravity_max = 9.81
+    rand.observation_position_sigma_turns = 0.0
+    rand.observation_velocity_sigma_turns_per_s = 0.0
+    rand.observation_torque_sigma_nm = 0.0
+    rand.control_jitter_std_s = 0.0
+    rand.control_jitter_max_s = 0.0
+    rand.command_delay_mean_s = 0.0
+    rand.command_delay_std_s = 0.0
+    rand.command_delay_max_s = 0.0
+    rand.packet_drop_prob = 0.0
+
+    pert = clean_config.perturbation
+    pert.injection_probability = 0.0
+    pert.injection_duration_s = 0.0
+    pert.max_torque_nm = 0.0
+    pert.tip_force_probability = 0.0
+    pert.max_tip_force_n = 0.0
+    return clean_config
 
 
 class CheckpointOnnxExportCallback(CheckpointCallback):
@@ -299,7 +343,9 @@ def main() -> None:
 
     env_fns = [make_env(config, config.seed + idx) for idx in range(config.ppo_n_envs)]
     vec_env = DummyVecEnv(env_fns)
-    eval_env = DummyVecEnv([make_eval_env(config)])
+    clean_eval_config = make_clean_eval_config(config)
+    clean_eval_env = DummyVecEnv([make_eval_env(clean_eval_config, config.seed + 10_000)])
+    robust_eval_env = DummyVecEnv([make_eval_env(config, config.seed + 20_000)])
 
     model = PPO(
         policy="MlpPolicy",
@@ -310,7 +356,7 @@ def main() -> None:
         device=args.device,
         n_steps=config.ppo_n_steps,
         batch_size=config.ppo_batch_size,
-        learning_rate=config.ppo_learning_rate,
+        learning_rate=linear_schedule(config.ppo_learning_rate, config.ppo_learning_rate_final),
         gamma=config.ppo_gamma,
         gae_lambda=config.ppo_gae_lambda,
         clip_range=config.ppo_clip_range,
@@ -318,6 +364,7 @@ def main() -> None:
         vf_coef=config.ppo_vf_coef,
         max_grad_norm=config.ppo_max_grad_norm,
         n_epochs=config.ppo_n_epochs,
+        target_kl=config.ppo_target_kl,
     )
 
     callbacks = []
@@ -354,38 +401,60 @@ def main() -> None:
             verbose=1,
         )
 
-    eval_callback = EvalCallback(
-        eval_env,
+    clean_eval_callback = EvalCallback(
+        clean_eval_env,
         best_model_save_path=str(output_dir / "best_model"),
-        log_path=str(output_dir / "eval_logs"),
+        log_path=str(output_dir / "eval_logs_clean"),
         eval_freq=max(1, args.eval_freq // config.ppo_n_envs),
         deterministic=True,
         render=False,
         callback_on_new_best=stop_training_callback,
         verbose=1,
     )
-    callbacks.append(eval_callback)
+    robust_eval_callback = EvalCallback(
+        robust_eval_env,
+        best_model_save_path=None,
+        log_path=str(output_dir / "eval_logs_robust"),
+        eval_freq=max(1, args.eval_freq // config.ppo_n_envs),
+        deterministic=True,
+        render=False,
+        verbose=1,
+    )
+    callbacks.extend([clean_eval_callback, robust_eval_callback])
 
     model.learn(total_timesteps=config.ppo_total_timesteps, progress_bar=args.progress_bar, callback=callbacks)
 
     model_path = output_dir / "pendulum_ppo.zip"
+    onnx_last_path = output_dir / "pendulum_policy_last.onnx"
     onnx_path = output_dir / "pendulum_policy.onnx"
     model.save(model_path)
 
     sample_obs = vec_env.reset()
     if isinstance(sample_obs, tuple):
         sample_obs = sample_obs[0]
-    export_policy_to_onnx(model.policy, onnx_path, sample_obs[0], config.export_opset)
+    export_policy_to_onnx(model.policy, onnx_last_path, sample_obs[0], config.export_opset)
+
+    best_model_zip = output_dir / "best_model" / "best_model.zip"
+    onnx_source = "last"
+    if best_model_zip.exists():
+        best_model = PPO.load(str(best_model_zip), device=args.device)
+        export_policy_to_onnx(best_model.policy, onnx_path, sample_obs[0], config.export_opset)
+        onnx_source = "best"
+    else:
+        export_policy_to_onnx(model.policy, onnx_path, sample_obs[0], config.export_opset)
 
     summary = {
         "model_path": str(model_path),
         "onnx_path": str(onnx_path),
+        "onnx_last_path": str(onnx_last_path),
+        "onnx_source": onnx_source,
         "total_timesteps": config.ppo_total_timesteps,
         "seed": config.seed,
         "n_envs": config.ppo_n_envs,
         "checkpoint_dir": str(checkpoint_dir),
         "best_model_dir": str(output_dir / "best_model"),
-        "eval_log_dir": str(output_dir / "eval_logs"),
+        "eval_log_dir_clean": str(output_dir / "eval_logs_clean"),
+        "eval_log_dir_robust": str(output_dir / "eval_logs_robust"),
         "plot_dir": str(output_dir / "training_plots"),
         "stop_reward_threshold": args.stop_reward_threshold,
     }

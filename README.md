@@ -69,16 +69,24 @@ Outputs:
 
 - `artifacts/pendulum_ppo.zip`
 - `artifacts/pendulum_policy.onnx`
+- `artifacts/pendulum_policy_last.onnx`
 - `artifacts/config.json`
 - `artifacts/train_summary.json`
 - `artifacts/checkpoints/pendulum_ppo_*`
 - `artifacts/best_model/`
+- `artifacts/eval_logs_clean/`
+- `artifacts/eval_logs_robust/`
 
 Training behavior:
 
 - Checkpoints are written periodically during training.
-- The best eval model is saved separately.
+- Two eval tracks are logged during training:
+	- clean eval (no randomization/perturbations) for stable progress tracking
+	- robust eval (training randomization enabled) for robustness tracking
+- The best clean-eval model is saved separately.
 - Training only stops early if you pass `--stop-reward-threshold` and the evaluation reward reaches it.
+- `pendulum_policy.onnx` is exported from the best clean-eval model when available, and falls back to the last model otherwise.
+- `pendulum_policy_last.onnx` is always exported from the last training step.
 
 Example early-stop run:
 
