@@ -48,7 +48,7 @@ This matches the real setup better than assuming perfectly periodic actuation.
 
 ## Observation Design
 
-Use the current sample plus the last 4 samples, for a total history length of 5.
+Use the current sample plus the last 49 samples, for a total history length of 50.
 
 For each sample, include:
 
@@ -59,10 +59,10 @@ For each sample, include:
 Explicit tensor layout:
 
 - Raw per-step observation: `o_t ∈ R^3`.
-- History buffer: `O_t ∈ R^{5×3}` where rows are `[o_{t-4}, o_{t-3}, o_{t-2}, o_{t-1}, o_t]`.
+- History buffer: `O_t ∈ R^{50×3}` where rows are `[o_{t-49}, ..., o_t]`.
 - Preprocessed per-step feature vector: `x_t ∈ R^4 = [sin(theta_t), cos(theta_t), vel_norm_t, torque_norm_t]`.
-- Preprocessed history tensor: `X_t ∈ R^{5×4}`.
-- Flattened policy input: `z_t ∈ R^{20}`.
+- Preprocessed history tensor: `X_t ∈ R^{50×4}`.
+- Flattened policy input: `z_t ∈ R^{200}`.
 
 Recommended preprocessing before the policy sees the data:
 
@@ -75,7 +75,7 @@ Why this matters:
 
 - Absolute turns are fine for telemetry, but raw angle values grow without bound and are awkward for the network.
 - `sin` and `cos` avoid discontinuities and make swing-up around `2π` easier.
-- A 5-sample stack lets the policy see short-term motion and infer delay/jitter effects.
+- A 50-sample stack gives the policy a full second of motion history, which is better for delay, inertia mismatch, and latent system identification.
 
 Recommended normalization targets:
 
@@ -87,7 +87,7 @@ If you want the policy to see timing directly, an optional extra scalar can be a
 
 - `dt_norm_t ∈ R`.
 
-That would change the per-step vector to `R^5` and the flattened input to `R^25`. The default plan below does not include it, because the 5-step history already carries most of the timing information.
+That would change the per-step vector to `R^5` and the flattened input to `R^250`. The default plan below does not include it, because the 50-step history already carries most of the timing information.
 
 ## Action Design
 

@@ -83,7 +83,7 @@ class PendulumConfig:
     max_torque_nm: float = 1.0
     control_hz: float = 50.0
     physics_hz: float = 1000.0
-    history_length: int = 5
+    history_length: int = 50
     observation_features_per_step: int = 4
     initial_position_turns_min: float = -5.0
     initial_position_turns_max: float = 5.0

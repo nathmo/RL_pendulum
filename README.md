@@ -21,8 +21,8 @@ The implementation plan is documented in [PENDULUM_RL_PLAN.md](PENDULUM_RL_PLAN.
 - RL algorithm: PPO.
 - Policy type: deterministic at runtime, stochastic during training.
 - Control rate: default 50 Hz, configurable.
-- Observation history: last 5 samples.
-- Policy input size: 20 features after preprocessing.
+- Observation history: last 50 samples.
+- Policy input size: 200 features after preprocessing.
 - Policy output size: 1 normalized torque command in `[-1, 1]`.
 - Network: compact MLP actor-critic with a 128-unit shared encoder and 64-unit policy/value heads.
 
