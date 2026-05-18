@@ -153,128 +153,48 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         theta_turns, theta_dot_turns_per_s, torque_nm = self._raw_measurement()
         return self._observation_builder.push(theta_turns, theta_dot_turns_per_s, torque_nm)
 
+    @staticmethod
+    def _shape_reward(error_ratio: float, mode: str) -> float:
+        if mode == "quadratic":
+            return max(0.0, 1.0 - error_ratio**2)
+        return float(np.exp(-(error_ratio**2)))
+
     def _compute_reward(self, commanded_torque_nm: float, previous_commanded_torque_nm: float) -> tuple[float, dict[str, float]]:
         cfg = self.config
         reward_cfg = cfg.reward
-
         theta = float(self.data.qpos[self._hinge_qposadr])
         theta_dot = float(self.data.qvel[self._hinge_dofadr])
         theta_turns = radians_to_turns(theta)
         phase_error_turns = ((theta_turns - reward_cfg.target_phase_turns + 0.5) % 1.0) - 0.5
         abs_phase_error_turns = abs(phase_error_turns)
-
-        upright_scale = max(float(reward_cfg.upright_exponential_scale_turns), 1e-6)
-        upright = float(np.exp(-((abs_phase_error_turns / upright_scale) ** 2)))
-        lever_arm_m = self._tip_mass_kg * self._length_m
-        pivot_inertia_kgm2 = self._tip_mass_kg * self._length_m**2
-        potential = self._gravity * lever_arm_m * (1.0 - np.cos(theta))
-        kinetic = 0.5 * pivot_inertia_kgm2 * theta_dot**2
-        energy = potential + kinetic
-        target_energy = 2.0 * self._gravity * lever_arm_m
-        energy_error = abs(energy - target_energy)
-        energy_reward = np.exp(-energy_error / max(reward_cfg.energy_scale, 1e-6))
-        gravity_torque_nm = -self._gravity * lever_arm_m * np.sin(theta)
-        gravity_torque_abs_nm = abs(gravity_torque_nm)
-
         theta_dot_turns_per_s = radians_to_turns(theta_dot)
-        vel_penalty = (theta_dot_turns_per_s / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
-        
-        # --- Smart torque penalty aware of perturbations ---
-        # If external torque/force is being injected, don't penalize the control effort as harshly
-        # Instead, reward the agent for recovering/stabilizing the system
-        external_disturbance_magnitude = abs(self._injected_torque_nm) + abs(self._tip_force_n)
-        
         torque_norm = commanded_torque_nm / max(self.config.max_torque_nm, 1e-6)
-        
-        # Base torque penalty
-        base_torque_penalty = torque_norm ** 2
-        
-        # If there's significant external disturbance, modulate the penalty
-        if external_disturbance_magnitude > 1e-6:
-            # Normalize disturbance magnitude
-            max_possible_disturbance = self.config.perturbation.max_torque_nm + self.config.perturbation.max_tip_force_n
-            disturbance_norm = min(1.0, external_disturbance_magnitude / max(max_possible_disturbance, 1e-6))
-            
-            # When disturbance is present, reduce the torque penalty (allow higher control effort to counter it)
-            # but only if the control is actually counter-acting the disturbance
-            # This is a simple heuristic: if commanded torque is in opposite direction to injected torque, reward it
-            if abs(self._injected_torque_nm) > 1e-6:
-                torque_alignment = (self._injected_torque_nm * commanded_torque_nm) / (abs(self._injected_torque_nm) * abs(commanded_torque_nm) + 1e-6)
-                # If controller is opposing the disturbance (negative alignment), reduce penalty
-                if torque_alignment < -0.3:  # Somewhat opposed
-                    base_torque_penalty *= max(0.2, 1.0 - 0.8 * disturbance_norm)
-            else:
-                # No opposing torque disturbance, just reduce penalty due to presence of disturbance
-                base_torque_penalty *= max(0.3, 1.0 - 0.7 * disturbance_norm)
-        
-        torque_penalty = base_torque_penalty
-        # --- Duration-sensitive (thermal-like) torque saturation penalty ---
-        # Compute normalized excess above the saturation threshold
-        threshold = float(getattr(reward_cfg, "torque_saturation_threshold", 0.95))
-        excess = max(0.0, abs(torque_norm) - threshold) / max(1e-6, (1.0 - threshold))
-        scaled = min(1.0, excess)
-        expnt = float(getattr(reward_cfg, "torque_saturation_integrator_exponent", 2.0))
-        # integrate with exponential decay using control_dt as timestep
-        dt = float(self.config.control_dt)
-        tau = max(1e-6, float(getattr(reward_cfg, "torque_saturation_time_constant_s", 2.0)))
-        alpha = float(np.exp(-dt / tau))
-        self._torque_saturation_integrator = alpha * self._torque_saturation_integrator + (1.0 - alpha) * (scaled ** expnt)
-        torque_saturation_penalty = float(reward_cfg.torque_saturation_penalty_weight) * (self._torque_saturation_integrator ** 2)
-        delta_torque_penalty = ((commanded_torque_nm - previous_commanded_torque_nm) / max(self.config.max_torque_nm, 1e-6)) ** 2
+        position_cost = phase_error_turns**2
+        speed_cost = theta_dot_turns_per_s**2
+        effort_cost = torque_norm**2
 
         reward = (
-            reward_cfg.upright_weight * upright
-            + reward_cfg.energy_weight * energy_reward
-            - reward_cfg.velocity_penalty_weight * vel_penalty
-            - reward_cfg.torque_penalty_weight * torque_penalty
-            - torque_saturation_penalty
-            - reward_cfg.delta_torque_penalty_weight * delta_torque_penalty
+            -reward_cfg.upright_weight * position_cost
+            -reward_cfg.velocity_penalty_weight * speed_cost
+            -reward_cfg.torque_penalty_weight * effort_cost
         )
 
-        # --- Rolling-average rotation penalty ---
-        # Track rotation (in turns) over time and compute net revolutions
-        current_time_s = float(self._substep_index * self.config.physics_dt)
-        current_turns = radians_to_turns(theta)
-        # append current sample
-        self._rotation_history.append((current_time_s, current_turns))
-        # purge old samples outside the window
-        window_s = float(reward_cfg.rolling_window_s)
-        while self._rotation_history and (current_time_s - self._rotation_history[0][0]) > window_s:
-            self._rotation_history.popleft()
+        dt = float(self.config.control_dt)
+        self._steady_state_error_time_s = 0.0
+        self._success_counter = 0
 
         rolling_penalty = 0.0
         rolling_rev = 0.0
-        if current_time_s >= window_s and len(self._rotation_history) >= 2:
-            first_time, first_turns = self._rotation_history[0]
-            last_time, last_turns = self._rotation_history[-1]
-            # net accumulated revolutions over the window
-            rolling_rev = float(last_turns - first_turns)
-            # if net revolutions exceed threshold, penalize
-            if abs(rolling_rev) > float(reward_cfg.rolling_rev_threshold_turns):
-                rev_per_s = rolling_rev / window_s
-                # normalize by velocity scale then square
-                norm = (abs(rev_per_s) / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
-                rolling_penalty = float(reward_cfg.rolling_penalty_weight) * norm
-                reward -= rolling_penalty
-
-        if abs_phase_error_turns <= float(reward_cfg.steady_state_error_hold_threshold_turns):
-            self._steady_state_error_time_s += dt
-        else:
-            self._steady_state_error_time_s = 0.0
-
-        steady_state_error_penalty = float(reward_cfg.steady_state_error_weight) * float(
-            np.exp(float(reward_cfg.steady_state_error_growth_rate) * self._steady_state_error_time_s) - 1.0
-        ) * abs_phase_error_turns
-        reward -= steady_state_error_penalty
-
-
-        success = upright >= reward_cfg.success_upright_threshold and abs(theta_dot_turns_per_s) <= reward_cfg.success_velocity_threshold_turns_per_s
-        self._success_counter = self._success_counter + 1 if success else 0
-        if self._success_counter >= reward_cfg.success_hold_steps:
-            reward += reward_cfg.success_bonus
+        steady_state_error_penalty = 0.0
+        torque_saturation_penalty = 0.0
+        gravity_torque_nm = -self._gravity * (self._tip_mass_kg * self._length_m) * np.sin(theta)
+        gravity_torque_abs_nm = abs(gravity_torque_nm)
+        pivot_inertia_kgm2 = self._tip_mass_kg * self._length_m**2
+        energy_reward = 0.0
 
         metrics = {
-            "upright": upright,
+            "reward_mode": "quadratic",
+            "upright": max(0.0, 1.0 - position_cost),
             "phase_error_turns": phase_error_turns,
             "abs_phase_error_turns": abs_phase_error_turns,
             "energy_reward": energy_reward,
@@ -284,12 +204,13 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
             "theta_turns": theta_turns,
             "theta_dot_turns_per_s": theta_dot_turns_per_s,
             "commanded_torque_nm": commanded_torque_nm,
-            "injected_torque_nm": self._injected_torque_nm,
-            "injected_force_n": self._tip_force_n,
-            "external_disturbance_magnitude": external_disturbance_magnitude,
             "torque_norm": torque_norm,
+            "position_cost": position_cost,
+            "speed_cost": speed_cost,
+            "effort_cost": effort_cost,
+            "total_cost": -reward,
             "torque_saturation_penalty": torque_saturation_penalty,
-            "torque_saturation_integrator": float(self._torque_saturation_integrator),
+            "torque_saturation_integrator": 0.0,
             "steady_state_error_time_s": float(self._steady_state_error_time_s),
             "steady_state_error_penalty": steady_state_error_penalty,
             "rolling_rev_turns": rolling_rev,

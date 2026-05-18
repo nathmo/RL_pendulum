@@ -48,6 +48,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--device", default="cpu", help="Torch device")
     parser.add_argument("--n-envs", type=int, default=None, help="Number of vectorized environments")
+    parser.add_argument("--reward-mode", choices=("exponential", "quadratic"), default=None, help="Reward shaping mode to use for this run")
     parser.add_argument("--progress-bar", action="store_true", help="Show the PPO progress bar if tqdm and rich are installed")
     parser.add_argument("--checkpoint-freq", type=int, default=50_000, help="Save a checkpoint every N environment steps")
     parser.add_argument("--eval-freq", type=int, default=10_000, help="Evaluate every N environment steps")
@@ -334,6 +335,8 @@ def main() -> None:
         config.seed = args.seed
     if args.n_envs is not None:
         config.ppo_n_envs = args.n_envs
+    if args.reward_mode is not None:
+        config.reward.reward_mode = args.reward_mode
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)

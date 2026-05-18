@@ -44,6 +44,7 @@ class PerturbationConfig:
 
 @dataclass(slots=True)
 class RewardConfig:
+    reward_mode: str = "exponential"
     upright_weight: float = 2.5
     upright_exponential_scale_turns: float = 0.08
     energy_weight: float = 2

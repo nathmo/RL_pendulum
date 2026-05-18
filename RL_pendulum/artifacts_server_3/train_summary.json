@@ -1,0 +1,15 @@
+{
+  "model_path": "artifacts_server_3/pendulum_ppo.zip",
+  "onnx_path": "artifacts_server_3/pendulum_policy.onnx",
+  "onnx_last_path": "artifacts_server_3/pendulum_policy_last.onnx",
+  "onnx_source": "best",
+  "total_timesteps": 100000000,
+  "seed": 7,
+  "n_envs": 8,
+  "checkpoint_dir": "artifacts_server_3/checkpoints",
+  "best_model_dir": "artifacts_server_3/best_model",
+  "eval_log_dir_clean": "artifacts_server_3/eval_logs_clean",
+  "eval_log_dir_robust": "artifacts_server_3/eval_logs_robust",
+  "plot_dir": "artifacts_server_3/training_plots",
+  "stop_reward_threshold": null
+}

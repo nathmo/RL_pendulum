@@ -41,31 +41,18 @@ def _compute_live_score(
     rotation_history: list[tuple[float, float]],
 ) -> tuple[float, dict[str, float]]:
     reward_cfg = config.reward
-
-    theta = position_turns * 2.0 * math.pi
-    theta_dot = velocity_turns_per_s * 2.0 * math.pi
     phase_error_turns = ((position_turns - reward_cfg.target_phase_turns + 0.5) % 1.0) - 0.5
+    theta_dot_turns_per_s = velocity_turns_per_s
+    torque_norm = commanded_torque_nm / max(config.max_torque_nm, 1e-6)
 
-    upright = 0.5 * (1.0 + math.cos(2.0 * math.pi * phase_error_turns))
-    lever_arm_m = config.tip_mass_kg * config.length_m
-    pivot_inertia_kgm2 = config.tip_mass_kg * config.length_m**2
-    potential = 9.81 * lever_arm_m * (1.0 - math.cos(theta))
-    kinetic = 0.5 * pivot_inertia_kgm2 * theta_dot**2
-    energy = potential + kinetic
-    target_energy = 2.0 * 9.81 * lever_arm_m
-    energy_error = abs(energy - target_energy)
-    energy_reward = math.exp(-energy_error / max(reward_cfg.energy_scale, 1e-6))
-
-    vel_penalty = (velocity_turns_per_s / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)) ** 2
-    torque_penalty = (commanded_torque_nm / max(config.max_torque_nm, 1e-6)) ** 2
-    delta_torque_penalty = ((commanded_torque_nm - previous_commanded_torque_nm) / max(config.max_torque_nm, 1e-6)) ** 2
+    position_cost = phase_error_turns**2
+    speed_cost = theta_dot_turns_per_s**2
+    effort_cost = torque_norm**2
 
     score = (
-        reward_cfg.upright_weight * upright
-        + reward_cfg.energy_weight * energy_reward
-        - reward_cfg.velocity_penalty_weight * vel_penalty
-        - reward_cfg.torque_penalty_weight * torque_penalty
-        - reward_cfg.delta_torque_penalty_weight * delta_torque_penalty
+        -reward_cfg.upright_weight * position_cost
+        -reward_cfg.velocity_penalty_weight * speed_cost
+        -reward_cfg.torque_penalty_weight * effort_cost
     )
 
     rotation_history.append((current_time_s, position_turns))
@@ -74,22 +61,19 @@ def _compute_live_score(
 
     rolling_rev = 0.0
     rolling_penalty = 0.0
-    if current_time_s >= reward_cfg.rolling_window_s and len(rotation_history) >= 2:
-        rolling_rev = float(rotation_history[-1][1] - rotation_history[0][1])
-        if abs(rolling_rev) > reward_cfg.rolling_rev_threshold_turns:
-            rev_per_s = rolling_rev / reward_cfg.rolling_window_s
-            rolling_penalty = reward_cfg.rolling_penalty_weight * (
-                abs(rev_per_s) / max(reward_cfg.velocity_scale_turns_per_s, 1e-6)
-            ) ** 2
-            score -= rolling_penalty
 
     return float(score), {
-        "upright": float(upright),
+        "reward_mode": "quadratic",
+        "upright": float(max(0.0, 1.0 - position_cost)),
         "phase_error_turns": float(phase_error_turns),
-        "energy_reward": float(energy_reward),
-        "pivot_inertia_kgm2": float(pivot_inertia_kgm2),
+        "energy_reward": 0.0,
+        "pivot_inertia_kgm2": float(config.tip_mass_kg * config.length_m**2),
         "rolling_rev_turns": float(rolling_rev),
         "rolling_penalty": float(rolling_penalty),
+        "position_cost": float(position_cost),
+        "speed_cost": float(speed_cost),
+        "effort_cost": float(effort_cost),
+        "total_cost": float(-score),
     }
 
 
@@ -198,7 +182,7 @@ async def run_latency_probe(rate_hz: float, max_torque: float, watchdog_timeout:
             pass
 
 
-async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watchdog_timeout: float, debug: bool) -> None:
+async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watchdog_timeout: float, debug: bool, config: PendulumConfig | None = None) -> None:
     # Load ONNX policy that was exported from training (expects 20-dim stacked obs)
     policy = OnnxPendulumPolicy(model_path)
 
@@ -212,7 +196,7 @@ async def run_hardware(model_path: Path, rate_hz: float, max_torque: float, watc
     except Exception as e:
         print(f"[DEBUG] Failed to read ONNX metadata: {e}")
 
-    config = PendulumConfig()
+    config = config or PendulumConfig()
     tracker = ObservationBuilder(
         history_length=config.history_length,
         velocity_scale_turns_per_s=config.max_speed_turns_per_s,
@@ -308,6 +292,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rate", type=float, default=50.0, help="Control rate in Hz")
     parser.add_argument("--max-torque", type=float, default=1.0, help="Maximum torque to command (Nm)")
     parser.add_argument("--watchdog", type=float, default=0.1, help="Watchdog timeout (s)")
+    parser.add_argument("--reward-mode", choices=("exponential", "quadratic"), default=None, help="Reward shaping mode to use for live score reporting")
     parser.add_argument("--debug", action="store_true", help="Print telemetry every cycle")
     parser.add_argument("--measure-latency", action="store_true", help="Run a zero-torque latency/jitter probe instead of the policy loop")
     parser.add_argument("--measure-samples", type=int, default=500, help="Number of samples to collect in latency-probe mode")
@@ -317,9 +302,12 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    live_config = PendulumConfig()
+    if args.reward_mode is not None:
+        live_config.reward.reward_mode = args.reward_mode
     if args.measure_latency:
         asyncio.run(run_latency_probe(args.rate, args.max_torque, args.watchdog, args.measure_samples, args.csv, args.debug))
     else:
         if args.model is None:
             raise SystemExit("--model is required unless --measure-latency is set")
-        asyncio.run(run_hardware(Path(args.model), args.rate, args.max_torque, args.watchdog, args.debug))
+        asyncio.run(run_hardware(Path(args.model), args.rate, args.max_torque, args.watchdog, args.debug, live_config))

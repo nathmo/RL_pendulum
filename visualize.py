@@ -19,6 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--episodes", type=int, default=1, help="Number of episodes to display")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional step cap per episode")
     parser.add_argument("--sleep", type=float, default=None, help="Optional real-time delay per step")
+    parser.add_argument("--reward-mode", choices=("exponential", "quadratic"), default=None, help="Reward shaping mode to match training")
     return parser.parse_args()
 
 
@@ -40,6 +41,8 @@ def draw_pendulum(ax, theta: float, length: float) -> None:
 def main() -> None:
     args = parse_args()
     config = PendulumConfig()
+    if args.reward_mode is not None:
+        config.reward.reward_mode = args.reward_mode
     env = PendulumSwingUpEnv(config=config)
     policy = OnnxPendulumPolicy(args.model)
 
