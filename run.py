@@ -63,7 +63,7 @@ def _compute_live_score(
     rolling_penalty = 0.0
 
     return float(score), {
-        "reward_mode": "quadratic",
+        "reward_mode": reward_cfg.reward_mode,
         "upright": float(max(0.0, 1.0 - position_cost)),
         "phase_error_turns": float(phase_error_turns),
         "energy_reward": 0.0,

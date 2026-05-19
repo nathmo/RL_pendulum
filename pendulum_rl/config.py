@@ -44,36 +44,20 @@ class PerturbationConfig:
 
 @dataclass(slots=True)
 class RewardConfig:
-    reward_mode: str = "exponential"
-    upright_weight: float = 2.5
-    upright_exponential_scale_turns: float = 0.08
-    energy_weight: float = 2
-    velocity_penalty_weight: float = 0.02
-    torque_penalty_weight: float = 0.05
-    torque_saturation_penalty_weight: float = 0.2
-    # Normalized torque above which saturation is considered (fraction of max torque)
-    torque_saturation_threshold: float = 0.95
-    # Time constant (seconds) for the saturation integrator (thermal-like)
-    torque_saturation_time_constant_s: float = 2.0
-    # Exponent applied to normalized saturation when accumulating (larger -> harsher)
-    torque_saturation_integrator_exponent: float = 2.0
-    delta_torque_penalty_weight: float = 0.01
+    """Reward-related parameters used by the current environment.
+
+    Kept minimal: these fields are referenced by `pendulum_rl/env.py`.
+    If you need the more advanced shaping (saturation, success bonus,
+    rolling-penalty), use the RL_pendulum variant or reintroduce fields.
+    """
+
+    reward_mode: str = "quadratic"
+    upright_weight: float = 5
+    velocity_penalty_weight: float = 0.01
+    torque_penalty_weight: float = 0.02
     target_phase_turns: float = 0.5
-    success_bonus: float = 8.0
-    success_hold_steps: int = 12
-    success_upright_threshold: float = 0.95
-    success_velocity_threshold_turns_per_s: float = 0.08
-    energy_scale: float = 0.35
-    velocity_scale_turns_per_s: float = 2.0
-    steady_state_error_weight: float = 1.5
-    steady_state_error_growth_rate: float = 2.5
-    steady_state_error_hold_threshold_turns: float = 0.08
-    # Rolling-average penalty (seconds)
+    # Rolling-average window (seconds) used for optional penalties
     rolling_window_s: float = 5.0
-    # Weight applied to rolling average speed penalty
-    rolling_penalty_weight: float = 0.2
-    # Minimum cumulative revolutions over the window to apply penalty
-    rolling_rev_threshold_turns: float = 0.1
 
 
 @dataclass(slots=True)

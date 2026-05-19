@@ -193,7 +193,7 @@ class PendulumSwingUpEnv(gym.Env[np.ndarray, np.ndarray]):
         energy_reward = 0.0
 
         metrics = {
-            "reward_mode": "quadratic",
+            "reward_mode": reward_cfg.reward_mode,
             "upright": max(0.0, 1.0 - position_cost),
             "phase_error_turns": phase_error_turns,
             "abs_phase_error_turns": abs_phase_error_turns,
