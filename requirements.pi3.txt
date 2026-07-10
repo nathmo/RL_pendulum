@@ -1,5 +1,5 @@
 # Minimal Raspberry Pi 3B runtime dependencies (no training stack)
 numpy==1.26.4
-onnx==1.16.2
+onnx==1.22.0
 onnxruntime==1.20.1
 moteus>=0.3.90
